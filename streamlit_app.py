@@ -235,6 +235,13 @@ def _main():
     d=get_data(np_val,zs_val); w3,b3=d["w3"],d["b3"]; zs=d["z_scale"]
 
     # ---- auto-play logic ----
+    # 首次載入：觸發自動播放
+    if "_first_load" not in st.session_state:
+        st.session_state["_first_load"] = True
+        st.session_state["_playing"] = True
+        st.session_state["_frame"] = 0
+        st.rerun()
+
     playing = st.session_state.get("_playing", False)
     if playing:
         frame = st.session_state.get("_frame", 0)
