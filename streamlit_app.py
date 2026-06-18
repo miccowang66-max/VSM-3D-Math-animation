@@ -307,8 +307,8 @@ def build_kernel_3d_figure(data):
     fig.add_trace(go.Surface(x=Xp, y=Yp, z=np.zeros_like(Zp),
         colorscale=[[0,'rgba(180,210,255,0)'],[1,'rgba(180,210,255,0)']],
         showscale=False, opacity=0,
-        contours=dict(x=dict(show=True,color='rgba(160,200,255,0)',width=0.5),
-                      y=dict(show=True,color='rgba(160,200,255,0)',width=0.5)),
+        contours=dict(x=dict(show=True,color='rgba(160,200,255,0)',width=1),
+                      y=dict(show=True,color='rgba(160,200,255,0)',width=1)),
         name='SVM 決策平面'))
     # trace 4: projection curve
     if len(curve) > 1:
@@ -333,8 +333,8 @@ def build_kernel_3d_figure(data):
             dict(z=za[ma]), dict(z=zb[mb]),
             dict(z=zsv, marker=dict(opacity=svo)) if len(sv3)>0 else {},
             dict(z=pz, opacity=po, colorscale=[[0,sc0],[1,sc1]],
-                 contours=dict(x=dict(show=st_f>0.01,color=cc,width=0.5),
-                              y=dict(show=st_f>0.01,color=cc,width=0.5))),
+                 contours=dict(x=dict(show=st_f>0.01,color=cc,width=1),
+                              y=dict(show=st_f>0.01,color=cc,width=1))),
             dict(opacity=co) if len(curve)>1 else {},
         ]
         frames.append(go.Frame(data=fd, name=f'f{i}',
