@@ -201,7 +201,35 @@ html, body, [class*="css"] {
     backdrop-filter: blur(16px);
     border-right: 1px solid rgba(100,116,139,0.15);
 }
-[data-testid="stSidebar"] * { color: #E2E8F0 !important; }
+
+/* 側邊欄文字與標籤顏色（提升對比與相容性） */
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] .stMarkdown,
+[data-testid="stSidebar"] span {
+    color: #E2E8F0 !important;
+}
+
+/* 側邊欄提示文字 */
+[data-testid="stSidebar"] .stCaption {
+    color: #94A3B8 !important;
+}
+
+/* 側邊欄按鈕寬度與排版優化：防止折行，確保大小一致 */
+[data-testid="stSidebar"] [data-testid="stButton"] button {
+    padding: 6px 2px !important;
+    font-size: 0.82rem !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    width: 100% !important;
+    display: inline-flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+}
 
 /* 卡片容器 */
 .card {
@@ -214,7 +242,7 @@ html, body, [class*="css"] {
     box-shadow: 0 4px 24px rgba(0,0,0,0.3);
 }
 .card h3 { margin-top: 0; font-weight: 600; color: #E2E8F0; }
-.card p { color: #94A3B8; line-height: 1.7; font-size: 0.95rem; }
+.card p { color: #E2E8F0; line-height: 1.7; font-size: 0.95rem; }
 
 /* 標題 */
 .main-title {
@@ -222,7 +250,7 @@ html, body, [class*="css"] {
     letter-spacing: -0.02em; margin-bottom: 4px;
 }
 .subtitle {
-    font-size: 0.95rem; color: #64748B; font-weight: 400;
+    font-size: 0.95rem; color: #94A3B8; font-weight: 400;
 }
 
 /* Legend */
@@ -586,7 +614,7 @@ def main():
         ]
         for color, label in legend_items:
             st.markdown(
-                f'<div style="display:flex;align-items:center;margin:6px 0;font-size:0.85rem;color:#94A3B8;">'
+                f'<div style="display:flex;align-items:center;margin:6px 0;font-size:0.85rem;color:#E2E8F0;">'
                 f'<span class="legend-dot" style="background:{color};box-shadow:0 0 6px {color}44;"></span>{label}'
                 f'</div>',
                 unsafe_allow_html=True,
