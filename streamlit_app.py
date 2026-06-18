@@ -224,9 +224,20 @@ def _main():
         with c3:
             if st.button("3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state.update(_si=2,_playing=True,_frame=0); st.rerun()
         st.markdown("---"); st.markdown("### Animation")
-        manual_t = st.slider("Progress",0,100,0,1,key="_anim_slider",
-                             help="Drag to scrub. Auto-plays on state switch.")
         playing = st.session_state.get("_playing",False)
+        c4,c5 = st.columns(2)
+        with c4:
+            if st.button("⏸ Pause" if playing else "▶ Play",use_container_width=True,key="_btn_play"):
+                st.session_state["_playing"] = not playing
+                if not playing: st.session_state["_frame"] = 0
+                st.rerun()
+        with c5:
+            if st.button("↺ Reset",use_container_width=True,key="_btn_reset"):
+                st.session_state["_playing"] = False
+                st.session_state["_frame"] = 0
+                st.rerun()
+        # 不使用 manual_t，全部由 auto-play 控制
+        manual_t = 0  # dummy, not used when playing
         st.markdown("---")
         for c,l in [(C_TEAL,"Class A"),(C_PURPLE,"Class B"),(C_GOLD,"Support Vectors"),("#FFF","Decision Boundary"),(C_MARGIN,"Margins"),(C_CURVE,"Projection")]:
             st.markdown(f'<div style="display:flex;align-items:center;margin:5px 0;font-size:0.85rem;color:#94A3B8"><span class="legend-dot" style="background:{c};box-shadow:0 0 6px {c}44"></span>{l}</div>',unsafe_allow_html=True)
