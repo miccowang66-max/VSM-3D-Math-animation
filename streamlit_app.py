@@ -213,7 +213,7 @@ def build_linear_figure(data):
         mg = np.clip((t-0.2)/0.4, 0, 1)
         sv = np.clip((t-0.5)/0.5, 0, 1)
         frames.append(go.Frame(data=[
-            None, None,
+            {}, {},
             dict(opacity=bd),
             dict(opacity=mg), dict(opacity=mg),
             dict(opacity=sv, marker=dict(size=1+sv*11)),
