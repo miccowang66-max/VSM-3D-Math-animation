@@ -1,254 +1,716 @@
 """
-streamlit_app.py — SVM Kernel Trick 3D (Three.js smooth 60fps animation)
+streamlit_app.py — SVM 核方法 3D 互動視覺化（精緻設計版）
+========================================================
+現代化深色主題．莫蘭迪配色．Plotly 原生 3D 渲染．無 CDN 依賴
 
-Run: streamlit run streamlit_app.py
+執行: streamlit run streamlit_app.py
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
+import plotly.graph_objects as go
 import numpy as np
-import json
-
-DEFAULT_Z = 8.0; DEFAULT_N = 80
-
-def _gen(n=80, zs=8.0):
-    rng=np.random.RandomState(42)
-    al=rng.randn(n,2)*1.2+[-3,-3]; bl=rng.randn(n,2)*1.2+[3,3]
-    X=np.vstack([al,bl]); y=np.hstack([np.zeros(n),np.ones(n)])
-    an=rng.randn(n,2)*1.0
-    ang=rng.uniform(0,2*np.pi,n); rad=rng.uniform(3.5,5,n)
-    bn=np.column_stack([rad*np.cos(ang),rad*np.sin(ang)])
-    try:
-        from sklearn.svm import SVC
-        s=SVC(kernel="linear",C=1e10,random_state=42); s.fit(X,y)
-        w=s.coef_[0].astype(np.float64); b2=float(s.intercept_[0]); sv2=[int(i) for i in s.support_]
-    except:
-        ca=al.mean(0); cb=bl.mean(0); w=cb-ca; w/=np.linalg.norm(w); b2=float(-np.dot(w,(ca+cb)/2))
-        sv2=[int(i) for i in np.where(np.abs(np.dot(al,w)+b2)<=np.percentile(np.abs(np.dot(al,w)+b2),20))[0]]+[int(n+i) for i in np.where(np.abs(np.dot(bl,w)+b2)<=np.percentile(np.abs(np.dot(bl,w)+b2),20))[0]]
-    wn=w/np.linalg.norm(w); perp=np.array([-wn[1],wn[0]],dtype=np.float64); pc=-b2*wn; e=7.0
-    p1=pc+perp*e; p2=pc-perp*e
-
-    def kz(p): return zs*np.exp(-np.sum(p**2,axis=1))
-    def phi(p): r2=np.sum(p**2,axis=1); return np.column_stack([p,zs*np.exp(-r2)])
-    pa=phi(an); pb=phi(bn); znr=kz(an); znb=kz(bn)
-    rc=pa.mean(0); bc=pb.mean(0); w3=rc-bc; w3/=np.linalg.norm(w3); mid=(rc+bc)/2; b3=float(-np.dot(w3,mid))
-    da=np.abs(np.dot(pa,w3)+b3); db2=np.abs(np.dot(pb,w3)+b3)
-    sva=np.where(da<=np.percentile(da,10))[0]; svb=np.where(db2<=np.percentile(db2,10))[0]
-    sv3=np.vstack([pa[sva],pb[svb]]).tolist()
-
-    cv=[]
-    for i in range(120):
-        th=2*np.pi*i/120; ct,st=np.cos(th),np.sin(th); lo,hi=0.,7.
-        fl=w3[0]*lo*ct+w3[1]*lo*st+w3[2]*zs*np.exp(-lo*lo)+b3
-        fh=w3[0]*hi*ct+w3[1]*hi*st+w3[2]*zs*np.exp(-hi*hi)+b3
-        if fl*fh>0: continue
-        for _ in range(30):
-            mid=(lo+hi)/2; fm=w3[0]*mid*ct+w3[1]*mid*st+w3[2]*zs*np.exp(-mid*mid)+b3
-            if abs(fm)<0.005: break
-            if fl*fm<0: hi=mid;fh=fm
-            else: lo=mid;fl=fm
-        r=(lo+hi)/2; cv.append([float(r*ct),float(r*st)])
-
-    return dict(n=n,al=al.tolist(),bl=bl.tolist(),an=an.tolist(),bn=bn.tolist(),
-                znr=znr.tolist(),znb=znb.tolist(),w=w.tolist(),b2=b2,sv2=sv2,
-                db1=p1.tolist(),db2=p2.tolist(),w3=w3.tolist(),b3=b3,sv3=sv3,cv=cv,zs=zs)
+from plotly.subplots import make_subplots
 
 # ============================================================
-THREE_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SVM Kernel Trick 3D</title>
+# 常數 & 配色
+# ============================================================
+DEFAULT_Z_SCALE = 8.0
+DEFAULT_N = 80
+C_TEAL   = '#22D3EE'
+C_TEAL_BRIGHT = '#67E8F9'
+C_PURPLE = '#A855F7'
+C_PURPLE_BRIGHT = '#C084FC'
+C_GOLD   = '#FBBF24'
+C_SURFACE = 'rgba(200,220,255,0.32)'
+C_SURFACE_LINE = 'rgba(160,200,255,0.55)'
+C_CURVE  = '#4ADE80'
+C_MARGIN = '#FDE68A'
+C_AXIS   = '#475569'
+C_GRID   = 'rgba(100,116,139,0.12)'
+
+# ============================================================
+# 資料生成（數學邏輯不變，接受參數以支援互動）
+# ============================================================
+
+def _generate_datasets(n_per_class=DEFAULT_N, z_scale=DEFAULT_Z_SCALE):
+    """生成線性 + 非線性資料集，計算 SVM 決策面參數。"""
+    rng = np.random.RandomState(42)
+
+    # 線性資料
+    class_a_lin = rng.randn(n_per_class, 2) * 1.2 + np.array([-3, -3])
+    class_b_lin = rng.randn(n_per_class, 2) * 1.2 + np.array([3, 3])
+    X_linear = np.vstack([class_a_lin, class_b_lin])
+    y_linear = np.hstack([np.zeros(n_per_class), np.ones(n_per_class)])
+
+    # 非線性資料
+    class_a_nonlin = rng.randn(n_per_class, 2) * 1.0
+    angles = rng.uniform(0, 2*np.pi, n_per_class)
+    radii = rng.uniform(3.5, 5.0, n_per_class)
+    class_b_nonlin = np.column_stack([radii*np.cos(angles), radii*np.sin(angles)])
+
+    # 線性 SVM
+    try:
+        from sklearn.svm import SVC
+        svm_2d = SVC(kernel="linear", C=1e10, random_state=42)
+        svm_2d.fit(X_linear, y_linear)
+        w = svm_2d.coef_[0].astype(np.float64)
+        b_2d = float(svm_2d.intercept_[0])
+        sv_2d = [int(i) for i in svm_2d.support_]
+    except ImportError:
+        ca = class_a_lin.mean(axis=0); cb = class_b_lin.mean(axis=0)
+        w = cb - ca; w = w / np.linalg.norm(w)
+        b_2d = float(-np.dot(w, (ca+cb)/2))
+        da = np.abs(np.dot(class_a_lin,w)+b_2d); db = np.abs(np.dot(class_b_lin,w)+b_2d)
+        sv_2d = (
+            [int(i) for i in np.where(da<=np.percentile(da,20))[0]] +
+            [int(n_per_class+i) for i in np.where(db<=np.percentile(db,20))[0]]
+        )
+
+    # 邊界線幾何
+    w_norm = w / np.linalg.norm(w)
+    perp = np.array([-w_norm[1], w_norm[0]], dtype=np.float64)
+    ext = 7.0; pc = -b_2d*w_norm
+    p1 = pc + perp*ext; p2 = pc - perp*ext
+
+    # 核函數
+    def _phi(pts):
+        r_sq = np.sum(pts**2, axis=1)
+        return np.column_stack([pts, z_scale * np.exp(-r_sq)])
+
+    def _kz(pts):
+        return z_scale * np.exp(-np.sum(pts**2, axis=1))
+
+    phi_a = _phi(class_a_nonlin)
+    phi_b = _phi(class_b_nonlin)
+    znr = _kz(class_a_nonlin)
+    znb = _kz(class_b_nonlin)
+
+    # 3D 最大邊界決策平面
+    red_c = np.mean(phi_a, axis=0)
+    blue_c = np.mean(phi_b, axis=0)
+    w3 = red_c - blue_c
+    w3 = w3 / np.linalg.norm(w3)
+    mid3 = (red_c + blue_c) / 2.0
+    b3 = float(-np.dot(w3, mid3))
+
+    # 3D SV
+    da3 = np.abs(np.dot(phi_a, w3)+b3); db3 = np.abs(np.dot(phi_b, w3)+b3)
+    sv_a = np.where(da3 <= np.percentile(da3, 10))[0]
+    sv_b = np.where(db3 <= np.percentile(db3, 10))[0]
+    sv_3d_phi = np.vstack([phi_a[sv_a], phi_b[sv_b]])
+
+    # 2D 投影邊界曲線
+    curve_2d = _compute_boundary_curve(w3[0], w3[1], w3[2], b3, z_scale)
+
+    # 3D 平面網格
+    plane_pts = _make_plane_surface(w3[0], w3[1], w3[2], b3, z_scale)
+
+    # 線性 SV 座標
+    sv_linear_pts = np.vstack([X_linear[sv_2d]])
+
+    return {
+        "n": n_per_class,
+        "z_scale": z_scale,
+        "a_lin": class_a_lin, "b_lin": class_b_lin,
+        "a_nl": class_a_nonlin, "b_nl": class_b_nonlin,
+        "znr": znr, "znb": znb,
+        "w": w, "b_2d": b_2d,
+        "sv_2d": sv_2d, "sv_linear_pts": sv_linear_pts,
+        "p1": p1, "p2": p2,
+        "w3": w3, "b3": b3,
+        "sv_3d_phi": sv_3d_phi,
+        "curve_2d": curve_2d,
+        "plane_pts": plane_pts,
+        "red_centroid_3d": red_c,
+        "blue_centroid_3d": blue_c,
+    }
+
+
+def _compute_boundary_curve(a, b, c, d, z_scale=DEFAULT_Z_SCALE, n_angles=150):
+    """取樣 2D 決策邊界曲線（二分搜尋半徑）。"""
+    pts = []
+    for i in range(n_angles):
+        theta = 2*np.pi*i/n_angles
+        ct, st = np.cos(theta), np.sin(theta)
+        lo, hi = 0.0, 7.0
+        flo = a*lo*ct + b*lo*st + c*z_scale*np.exp(-lo*lo) + d
+        fhi = a*hi*ct + b*hi*st + c*z_scale*np.exp(-hi*hi) + d
+        if flo*fhi > 0:
+            continue
+        for _ in range(30):
+            mid = (lo+hi)/2
+            fm = a*mid*ct + b*mid*st + c*z_scale*np.exp(-mid*mid) + d
+            if abs(fm) < 0.005:
+                break
+            if flo*fm < 0:
+                hi = mid; fhi = fm
+            else:
+                lo = mid; flo = fm
+        r = (lo+hi)/2
+        pts.append([float(r*ct), float(r*st)])
+    return np.array(pts)
+
+
+def _make_plane_surface(a, b, c, d, z_scale=DEFAULT_Z_SCALE, extent=7.0, res=40):
+    """在 XY 網格上計算決策平面的 Z 值。"""
+    xs = np.linspace(-extent, extent, res)
+    ys = np.linspace(-extent, extent, res)
+    X, Y = np.meshgrid(xs, ys)
+    if abs(c) > 1e-8:
+        Z = -(a*X + b*Y + d) / c
+    else:
+        Z = np.zeros_like(X)
+    Z = np.clip(Z, -2, z_scale + 4)
+    return X, Y, Z
+
+
+# ============================================================
+# 一次性生成資料（session_state 快取）
+# ============================================================
+
+def get_data(n_particles=None, z_scale=None):
+    """Get or regenerate data. Regenerates if parameters changed."""
+    key_n = st.session_state.get("_n_particles", DEFAULT_N)
+    key_z = st.session_state.get("_z_scale", DEFAULT_Z_SCALE)
+    n = n_particles if n_particles is not None else key_n
+    z = z_scale if z_scale is not None else key_z
+    cache_key = f"data_n{n}_z{z}"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = _generate_datasets(n_per_class=n, z_scale=z)
+    return st.session_state[cache_key]
+
+
+# ============================================================
+# STREAMLIT 自訂 CSS
+# ============================================================
+
+CUSTOM_CSS = """
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0A0A1A;overflow:hidden;font-family:Arial,sans-serif}
-canvas{display:block}
-#ui{position:absolute;top:20px;left:20px;background:rgba(0,0,0,0.7);color:#fff;padding:16px 20px;border-radius:10px;max-width:360px;pointer-events:none;z-index:10;border:1px solid rgba(255,255,255,0.1)}
-#state{font-size:22px;font-weight:bold;margin-bottom:4px}
-#formula{font-size:13px;color:#fc0;margin-bottom:8px;font-family:monospace}
-#info{font-size:12px;color:#aaa;line-height:1.5}
-#btns{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
-#btns button{padding:11px 22px;font-size:14px;border:1px solid rgba(0,255,255,0.5);background:rgba(0,20,40,0.8);color:#0ff;border-radius:8px;cursor:pointer;transition:all .2s}
-#btns button:hover{background:rgba(0,255,255,0.15)}
-#btns button.active{background:rgba(0,255,255,0.2);border-color:#fff;color:#fff}
-#fps{position:absolute;top:8px;right:12px;color:#333;font-size:10px;font-family:monospace;z-index:10}
-#load{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#0ff;font-size:16px;z-index:100}
-</style></head><body>
-<div id="load">Loading 3D scene...</div>
-<div id="ui"><div id="state">SVM Kernel Trick</div><div id="formula">f(x) = wᵀx + b</div><div id="info">Initializing visualization...</div></div>
-<div id="btns">
-<button id="b0" class="active">Linear SVM</button>
-<button id="b1">Nonlinear</button>
-<button id="b2">Kernel 3D</button>
-</div><div id="fps"></div>
-<script>
-var DATA = __DATA__;
-</script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
- defer onload="init()" onerror="document.getElementById('load').textContent='CDN failed'">
-</script>
-<script>
-var N,scene,camera,renderer,redPts,bluePts,redGeo,blueGeo;
-var dbLine,marginP,marginN,svRings=[],kGrid=[],hpPlane,projCurve,projLines=[];
-var state=0, targetState=0, transT=0, transStart=0, transActive=false;
-var STATES=['LINEAR','NONLINEAR','KERNEL3'];
-var T_DUR=2200;
-var STATE_TEXT=[
- {n:'Linear SVM',c:'#0ff',f:'f(x)=w<sup>T</sup>x+b',i:'Data <span style=color:#0f0>linearly separable</span>. SVM finds optimal hyperplane.<br><span style=color:#0f0>&#x2501;</span> Boundary: w<sup>T</sup>x+b=0<br><span style=color:#ff0>&#x2501;</span> Margins: &plusmn;1<br><span style=color:#ff0>&#x25CB;</span> Support vectors'},
- {n:'Nonlinear Data',c:'#f0f',f:'No linear separator in &#x211D;<sup>2</sup>',i:'Data <span style=color:#ff0>not separable</span> in 2D.<br>Red cluster at center, blue ring around.<br><span style=color:#ff0>&#x2192;</span> <b>Kernel trick</b> lifts to 3D!'},
- {n:'Kernel 3D',c:'#ff0',f:'&#x3A6;(x,y)=(x,y,'+DATA.zs.toFixed(0)+'&middot;e<sup>&#x2212;(x&sup2;+y&sup2;)</sup>)',i:'Data <span style=color:#0f0>lifted to 3D</span>!<br>Plane separates classes in kernel space.<br>Green curve = 2D projection boundary.'}
-];
-function ease(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2}
-function lerp(a,b,t){return a+(b-a)*t}
-function init(){
- if(typeof THREE==='undefined'){document.getElementById('load').textContent='THREE missing';return}
- N=DATA.n;
- var W=window.innerWidth,H=window.innerHeight;
- scene=new THREE.Scene();
- scene.fog=new THREE.FogExp2(0x0A0A1A,0.0006);
- camera=new THREE.PerspectiveCamera(45,W/H,0.5,100);
- camera.position.set(3,-2,13);camera.lookAt(0,0,0);
- renderer=new THREE.WebGLRenderer({antialias:true});
- renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
- renderer.setClearColor(0x0A0A1A);
- document.body.appendChild(renderer.domElement);
- scene.add(new THREE.AmbientLight(0x333355,0.5));
- var dl=new THREE.DirectionalLight(0xffffff,0.8);dl.position.set(3,8,10);scene.add(dl);
-
- // stars
- var sg=new THREE.BufferGeometry(),sc=2000,sa=new Float32Array(sc*3);
- for(var i=0;i<sc*3;i+=3){sa[i]=(Math.random()-.5)*50;sa[i+1]=(Math.random()-.5)*50;sa[i+2]=(Math.random()-.5)*25-5}
- sg.setAttribute('position',new THREE.BufferAttribute(sa,3));
- scene.add(new THREE.Points(sg,new THREE.PointsMaterial({color:0xccccff,size:.04,transparent:true,opacity:.8,blending:THREE.AdditiveBlending,depthWrite:false})));
-
- // grid
- var gh=new THREE.GridHelper(16,24,0x222244,0x111122);scene.add(gh);
-
- // particles
- redGeo=new THREE.BufferGeometry();var ra=new Float32Array(N*3);
- redGeo.setAttribute('position',new THREE.BufferAttribute(ra,3));
- redPts=new THREE.Points(redGeo,new THREE.PointsMaterial({color:0x22d3ee,size:.22,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
- scene.add(redPts);
- blueGeo=new THREE.BufferGeometry();var ba=new Float32Array(N*3);
- blueGeo.setAttribute('position',new THREE.BufferAttribute(ba,3));
- bluePts=new THREE.Points(blueGeo,new THREE.PointsMaterial({color:0xa855f7,size:.22,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
- scene.add(bluePts);
-
- // decision boundary
- dbLine=line(DATA.db1[0],DATA.db1[1],0.02, DATA.db2[0],DATA.db2[1],0.02, 0x00ff88,0.08);
- marginP=line(DATA.db1[0]+DATA.w[0]*.14,DATA.db1[1]+DATA.w[1]*.14,0.01, DATA.db2[0]+DATA.w[0]*.14,DATA.db2[1]+DATA.w[1]*.14,0.01, 0xffcc00,0.04);
- marginN=line(DATA.db1[0]-DATA.w[0]*.14,DATA.db1[1]-DATA.w[1]*.14,0.01, DATA.db2[0]-DATA.w[0]*.14,DATA.db2[1]-DATA.w[1]*.14,0.01, 0xffcc00,0.04);
-
- // kernel grid
- var kg=new THREE.Group();kg.visible=false;scene.add(kg);
- var gr=24,ge=7.5,gd=new THREE.SphereGeometry(.05,4,4);
- for(var i=0;i<=gr;i++)for(var j=0;j<=gr;j++){
-  var fx=(i/gr-.5)*2*ge,fy=(j/gr-.5)*2*ge;
-  var m=new THREE.Mesh(gd,new THREE.MeshBasicMaterial({color:0x8888ff,transparent:true,opacity:.5,depthTest:true}));
-  m.position.set(fx,fy,0);m.userData={bx:fx,by:fy};kg.add(m);kGrid.push(m);
- }
-
- // hyperplane
- var hpg=new THREE.Group();hpg.visible=false;scene.add(hpg);
- var hpZ=DATA.b3!==undefined? -DATA.b3/DATA.w3[2] : DATA.zs*0.35;
- var hpMat=new THREE.MeshBasicMaterial({color:0x00ffff,side:THREE.DoubleSide,transparent:true,opacity:.3,depthWrite:false});
- hpPlane=new THREE.Mesh(new THREE.PlaneGeometry(12,12),hpMat);hpPlane.position.z=hpZ;
- var q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(DATA.w3[0],DATA.w3[1],DATA.w3[2]).normalize());
- hpPlane.setRotationFromQuaternion(q);
- var n2=DATA.w3[0]*DATA.w3[0]+DATA.w3[1]*DATA.w3[1]+DATA.w3[2]*DATA.w3[2];
- var t2=-DATA.b3/n2;hpPlane.position.set(DATA.w3[0]*t2,DATA.w3[1]*t2,DATA.w3[2]*t2);
- hpg.add(hpPlane);
-
- // projection curve
- var pcg=new THREE.Group();pcg.visible=false;scene.add(pcg);
- if(DATA.cv&&DATA.cv.length>1){
-  for(var ci=0;ci<DATA.cv.length;ci++){
-   var c0=DATA.cv[ci],c1=DATA.cv[(ci+1)%DATA.cv.length];
-   pcg.add(line(c0[0],c0[1],0.03,c1[0],c1[1],0.03,0x4ade80,0.05));
-  }
- }
-
- // z pillar
- scene.add(line(0,0,-3,0,0,hpZ+4,0x335566,0.03));
-
-  setPositions(0);updateUI();updateSV();
-  document.getElementById('load').style.display='none';
-  animate(0);
+/* 全域字體與背景 */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
-function line(x1,y1,z1,x2,y2,z2,color,width){
- var d=new THREE.Vector3(x2-x1,y2-y1,z2-z1),len=d.length();
- var mid=new THREE.Vector3((x1+x2)/2,(y1+y2)/2,(z1+z2)/2);
- var g=new THREE.CylinderGeometry(width,width,len,6,1);
- var m=new THREE.MeshBasicMaterial({color:color,transparent:true,opacity:1,depthTest:true});
- var mesh=new THREE.Mesh(g,m);mesh.position.copy(mid);
- mesh.setRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize()));
- scene.add(mesh);return mesh;
+.stApp {
+    background: linear-gradient(160deg, #0A0A1A 0%, #0F1729 40%, #0C1222 100%);
 }
-function setPositions(mt){
- var ra=redGeo.attributes.position.array,ba=blueGeo.attributes.position.array;
- for(var i=0;i<N;i++){
-  var rx=lerp(DATA.al[i][0],DATA.an[i][0],mt),ry=lerp(DATA.al[i][1],DATA.an[i][1],mt);
-  var bx=lerp(DATA.bl[i][0],DATA.bn[i][0],mt),by=lerp(DATA.bl[i][1],DATA.bn[i][1],mt);
-  ra[i*3]=rx;ra[i*3+1]=ry;ba[i*3]=bx;ba[i*3+1]=by;
- }
- redGeo.attributes.position.needsUpdate=true;blueGeo.attributes.position.needsUpdate=true;
+
+/* 側邊欄 */
+[data-testid="stSidebar"] {
+    background: rgba(15, 23, 42, 0.92) !important;
+    backdrop-filter: blur(16px);
+    border-right: 1px solid rgba(100,116,139,0.15);
 }
-function liftZ(kt){
- var ra=redGeo.attributes.position.array,ba=blueGeo.attributes.position.array;
- for(var i=0;i<N;i++){ra[i*3+2]=lerp(0,DATA.znr[i],kt);ba[i*3+2]=lerp(0,DATA.znb[i],kt)}
- redGeo.attributes.position.needsUpdate=true;blueGeo.attributes.position.needsUpdate=true;
+
+/* 側邊欄文字與標籤顏色（提升對比與相容性） */
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] .stMarkdown,
+[data-testid="stSidebar"] span {
+    color: #E2E8F0 !important;
 }
-function updateGrid(kt){for(var i=0;i<kGrid.length;i++){var n=kGrid[i],x=n.userData.bx,y=n.userData.by;n.position.z=Math.exp(-(x*x+y*y))*DATA.zs*kt}}
-function setCam(rt){camera.position.set(rt*7,rt*3,13-rt*6);camera.lookAt(0,0,lerp(0,DATA.zs*.35,rt))}
-function updateSV(){
- while(svRings.length>0){scene.remove(svRings.pop())}
- var rg=new THREE.TorusGeometry(.34,.055,8,20);
- var ra=redGeo.attributes.position.array,ba=blueGeo.attributes.position.array;
- DATA.sv2.forEach(function(idx){
-  var arr=idx<N?ra:ba,i=idx<N?idx:idx-N;
-  var r=new THREE.Mesh(rg,new THREE.MeshBasicMaterial({color:0xffbb24,transparent:true,opacity:.85,depthTest:true}));
-  r.position.set(arr[i*3],arr[i*3+1],arr[i*3+2]+.05);scene.add(r);svRings.push(r);
- });
+
+/* 側邊欄提示文字 */
+[data-testid="stSidebar"] .stCaption {
+    color: #94A3B8 !important;
 }
-function updateUI(){
- var u=STATE_TEXT[state];
- document.getElementById('state').textContent=u.n;document.getElementById('state').style.color=u.c;
- document.getElementById('formula').innerHTML=u.f;document.getElementById('info').innerHTML=u.i;
- ['b0','b1','b2'].forEach(function(id,i){document.getElementById(id).className=i===state?'active':''});
+
+/* 側邊欄按鈕寬度與排版優化：防止折行，確保大小一致 */
+[data-testid="stSidebar"] [data-testid="stButton"] button {
+    padding: 6px 2px !important;
+    font-size: 0.82rem !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    width: 100% !important;
+    display: inline-flex !important;
+    justify-content: center !important;
+    align-items: center !important;
 }
-function startTrans(to){targetState=to;transActive=true;transStart=performance.now();transT=0}
-function tickTrans(now){
- if(!transActive)return;
- var el=now-transStart;transT=Math.min(el/T_DUR,1);var t=ease(transT),f=state;
- if(f===0&&targetState===1){setPositions(t);dbLine.material.opacity=1-t;marginP.material.opacity=(1-t)*.9;marginN.material.opacity=(1-t)*.9}
- if((f===1||f===0)&&targetState===2){
-  if(f===0&&t<=.35){var pt=Math.min(t/.35,1);setPositions(pt);dbLine.material.opacity=1-pt;marginP.material.opacity=(1-pt)*.9;marginN.material.opacity=(1-pt)*.9}
-  else if(f===0){setPositions(1);dbLine.material.opacity=0;marginP.material.opacity=0;marginN.material.opacity=0}
-  var lt=smooth(f===0?.25:.0,f===0?.65:.35,t);liftZ(lt);
-  var st=smooth(f===0?.3:.2,f===0?1:.85,t);
-  kGrid[0].parent.visible=st>.05;updateGrid(Math.min(st*1.4,1));
-  hpPlane.parent.visible=st>.25;hpPlane.material.opacity=.3*st;
-  var pcg2=projCurve;if(!pcg2)pcg2=scene.children[scene.children.length-3];
-  if(pcg2&&pcg2.type==='Group'){pcg2.visible=st>.35;pcg2.children.forEach(function(c){if(c.material)c.material.opacity=.85*st})}
-  setCam(st);
- }
- if(transT>=1){state=targetState;transActive=false;setCam(state===2?1:0);if(state!==2){liftZ(0);setPositions(state===0?0:1);dbLine.material.opacity=state===0?1:0;marginP.material.opacity=state===0?.9:0;marginN.material.opacity=state===0?.9:0}updateUI()}
+
+/* 卡片容器 */
+.card {
+    background: rgba(15, 23, 42, 0.75);
+    border: 1px solid rgba(100,116,139,0.18);
+    border-radius: 14px;
+    padding: 24px 28px;
+    margin: 16px 0;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.3);
 }
-function smooth(e0,e1,x){var t2=Math.max(0,Math.min((x-e0)/(e1-e0),1));return t2*t2*(3-2*t2)}
-document.getElementById('b0').onclick=function(){if(state===0)return;startTrans(2);setTimeout(function(){if(!transActive){state=0;setPositions(0);liftZ(0);dbLine.material.opacity=1;marginP.material.opacity=.9;marginN.material.opacity=.9;setCam(0);updateUI();updateSV()}},50)};
-document.getElementById('b1').onclick=function(){if(state===1)return;if(state===2){state=0;setPositions(0);liftZ(0);dbLine.material.opacity=1;setCam(0);updateUI()}startTrans(1)};
-document.getElementById('b2').onclick=function(){if(state===2)return;startTrans(2)};
-var fc=0,lft=0;
-function animate(ts){
- requestAnimationFrame(animate);
- tickTrans(ts);
- fc++;if(ts-lft>=1000){document.getElementById('fps').textContent='FPS:'+Math.round(fc/((ts-lft)/1000));fc=0;lft=ts}
- renderer.render(scene,camera);
+.card h3 { margin-top: 0; font-weight: 600; color: #E2E8F0; }
+.card p { color: #E2E8F0; line-height: 1.7; font-size: 0.95rem; }
+
+/* 標題 */
+.main-title {
+    font-size: 2rem; font-weight: 700; color: #F1F5F9;
+    letter-spacing: -0.02em; margin-bottom: 4px;
 }
-window.addEventListener('resize',function(){camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight)});
-</script></body></html>"""
+.subtitle {
+    font-size: 0.95rem; color: #94A3B8; font-weight: 400;
+}
+
+/* Legend */
+.legend-dot {
+    display: inline-block; width: 12px; height: 12px;
+    border-radius: 50%; margin-right: 8px; vertical-align: middle;
+}
+.legend-line {
+    display: inline-block; width: 20px; height: 3px;
+    border-radius: 2px; margin-right: 8px; vertical-align: middle;
+}
+
+/* Segmented control styling */
+div[data-testid="stRadio"] > div {
+    gap: 4px;
+}
+div[data-testid="stRadio"] label {
+    padding: 10px 18px !important;
+    border-radius: 10px !important;
+    border: 1px solid rgba(100,116,139,0.2) !important;
+    background: rgba(30,41,59,0.6) !important;
+    transition: all 0.2s;
+    margin-bottom: 6px !important;
+}
+div[data-testid="stRadio"] label:hover {
+    border-color: rgba(34,211,238,0.4) !important;
+    background: rgba(34,211,238,0.08) !important;
+}
+div[data-testid="stRadio"] label[data-selected="true"] {
+    border-color: #22D3EE !important;
+    background: rgba(34,211,238,0.15) !important;
+    color: #22D3EE !important;
+    font-weight: 600;
+}
+
+/* 隱藏 Plotly modebar 中不需要的按鈕 */
+.modebar { opacity: 0.3; }
+.modebar:hover { opacity: 1; }
+</style>
+"""
+
+# ============================================================
+# 圖表建構函式
+# ============================================================
+
+def build_linear_figure(data):
+    """線性 SVM — 2D 散點圖 + 決策邊界線 + 邊界線 + SV"""
+    fig = go.Figure()
+
+    a_lin, b_lin = data["a_lin"], data["b_lin"]
+    sv_idx = set(data["sv_2d"])
+    n = data["n"]
+    w, b_2d = data["w"], data["b_2d"]
+    w_n = w / np.linalg.norm(w)
+
+    # 非 SV 的紅點
+    mask_a_nosv = [i for i in range(n) if i not in sv_idx]
+    mask_b_nosv = [i for i in range(n) if (i+n) not in sv_idx]
+
+    fig.add_trace(go.Scatter(
+        x=a_lin[mask_a_nosv, 0], y=a_lin[mask_a_nosv, 1],
+        mode='markers', name='類別 A',
+        marker=dict(size=7, color=C_TEAL, opacity=0.75,
+                     line=dict(width=0.5, color='rgba(255,255,255,0.15)')),
+        hovertemplate='x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>',
+    ))
+    fig.add_trace(go.Scatter(
+        x=b_lin[mask_b_nosv, 0], y=b_lin[mask_b_nosv, 1],
+        mode='markers', name='類別 B',
+        marker=dict(size=7, color=C_PURPLE, opacity=0.75,
+                     line=dict(width=0.5, color='rgba(255,255,255,0.15)')),
+        hovertemplate='x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>',
+    ))
+
+    # SV 標示
+    sv_a = [i for i in range(n) if i in sv_idx]
+    sv_b = [i-n for i in sv_idx if i >= n]
+    fig.add_trace(go.Scatter(
+        x=a_lin[sv_a, 0], y=a_lin[sv_a, 1],
+        mode='markers', name='支持向量',
+        marker=dict(size=12, color=C_GOLD, opacity=0.95,
+                     line=dict(width=2, color='rgba(255,255,255,0.5)'),
+                     symbol='circle-open'),
+        hovertemplate='SV-A<extra></extra>',
+    ))
+    fig.add_trace(go.Scatter(
+        x=b_lin[sv_b, 0], y=b_lin[sv_b, 1],
+        mode='markers', showlegend=False,
+        marker=dict(size=12, color=C_GOLD, opacity=0.95,
+                     line=dict(width=2, color='rgba(255,255,255,0.5)'),
+                     symbol='circle-open'),
+        hovertemplate='SV-B<extra></extra>',
+    ))
+
+    # 決策邊界線: w·x + b = 0，取兩端點
+    perp = np.array([-w_n[1], w_n[0]])
+    pc = -b_2d * w_n
+    ext = 7.5
+    xb = np.array([pc[0] - perp[0]*ext, pc[0] + perp[0]*ext])
+    yb = np.array([pc[1] - perp[1]*ext, pc[1] + perp[1]*ext])
+    fig.add_trace(go.Scatter(
+        x=xb, y=yb, mode='lines', name='決策邊界',
+        line=dict(color='#FFFFFF', width=2.2, dash='solid'),
+        hovertemplate='wᵀx+b=0<extra></extra>',
+    ))
+
+    # 邊界線 ±1
+    for sign, name, dash in [(1, '+1 Margin', 'dash'), (-1, '−1 Margin', 'dash')]:
+        offset = sign * w_n
+        xbm = xb + offset[0]
+        ybm = yb + offset[1]
+        fig.add_trace(go.Scatter(
+            x=xbm, y=ybm, mode='lines', name=name,
+            line=dict(color=C_MARGIN, width=1.4, dash=dash),
+            opacity=0.7, hovertemplate='wᵀx+b=%{text}<extra></extra>',
+            text=[f'{sign}' for _ in xbm],
+        ))
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(title='x₁', showgrid=True, gridcolor=C_GRID, zeroline=False,
+                    range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
+        yaxis=dict(title='x₂', showgrid=True, gridcolor=C_GRID, zeroline=False,
+                    range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
+        margin=dict(l=40, r=20, t=30, b=40),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
+                     font=dict(color='#94A3B8'), bgcolor='rgba(0,0,0,0)'),
+        hovermode='closest',
+        height=620,
+    )
+    return fig
+
+
+def build_nonlinear_figure(data):
+    """非線性資料 — 2D 散點，紅中心藍外環，無線性分隔器。"""
+    fig = go.Figure()
+    a_nl, b_nl = data["a_nl"], data["b_nl"]
+
+    fig.add_trace(go.Scatter(
+        x=a_nl[:, 0], y=a_nl[:, 1],
+        mode='markers', name='類別 A',
+        marker=dict(size=8, color=C_TEAL, opacity=0.8,
+                     line=dict(width=0.5, color='rgba(255,255,255,0.15)')),
+        hovertemplate='x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>',
+    ))
+    fig.add_trace(go.Scatter(
+        x=b_nl[:, 0], y=b_nl[:, 1],
+        mode='markers', name='類別 B',
+        marker=dict(size=8, color=C_PURPLE, opacity=0.8,
+                     line=dict(width=0.5, color='rgba(255,255,255,0.15)')),
+        hovertemplate='x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>',
+    ))
+
+    # 淡色虛線圓環（示意）
+    theta_c = np.linspace(0, 2*np.pi, 200)
+    r_mid = 4.25
+    fig.add_trace(go.Scatter(
+        x=r_mid*np.cos(theta_c), y=r_mid*np.sin(theta_c),
+        mode='lines', name='環形結構', showlegend=False,
+        line=dict(color='rgba(168,85,247,0.2)', width=1, dash='dot'),
+        hoverinfo='skip',
+    ))
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(title='x₁', showgrid=True, gridcolor=C_GRID, zeroline=False,
+                    range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
+        yaxis=dict(title='x₂', showgrid=True, gridcolor=C_GRID, zeroline=False,
+                    range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
+        margin=dict(l=40, r=20, t=30, b=40),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
+                     font=dict(color='#94A3B8'), bgcolor='rgba(0,0,0,0)'),
+        hovermode='closest',
+        height=620,
+    )
+    return fig
+
+
+def build_kernel_3d_figure(data):
+    """核方法 3D — 3D 散點 + SVM 決策平面 + 投影邊界曲線。"""
+    fig = go.Figure()
+    a_nl, b_nl = data["a_nl"], data["b_nl"]
+    znr, znb = data["znr"], data["znb"]
+    sv3 = data["sv_3d_phi"]
+    curve = data["curve_2d"]
+    Xp, Yp, Zp = data["plane_pts"]
+    n = data["n"]
+    zs = data["z_scale"]
+
+    # 建立 SV 集合
+    sv_set = set()
+    for sv in sv3:
+        sv_set.add((round(sv[0], 3), round(sv[1], 3), round(sv[2], 2)))
+
+    mask_a = np.ones(n, dtype=bool)
+    mask_b = np.ones(n, dtype=bool)
+    for i in range(n):
+        if (round(a_nl[i,0],3), round(a_nl[i,1],3), round(znr[i],2)) in sv_set:
+            mask_a[i] = False
+        if (round(b_nl[i,0],3), round(b_nl[i,1],3), round(znb[i],2)) in sv_set:
+            mask_b[i] = False
+
+    # Class A
+    fig.add_trace(go.Scatter3d(
+        x=a_nl[mask_a, 0], y=a_nl[mask_a, 1], z=znr[mask_a],
+        mode='markers', name='類別 A',
+        marker=dict(size=4, color=C_TEAL, opacity=0.8),
+        hovertemplate='(%{x:.1f}, %{y:.1f}, %{z:.1f})<extra></extra>',
+    ))
+    # Class B
+    fig.add_trace(go.Scatter3d(
+        x=b_nl[mask_b, 0], y=b_nl[mask_b, 1], z=znb[mask_b],
+        mode='markers', name='類別 B',
+        marker=dict(size=4, color=C_PURPLE, opacity=0.8),
+        hovertemplate='(%{x:.1f}, %{y:.1f}, %{z:.1f})<extra></extra>',
+    ))
+
+    # SV 3D
+    if len(sv3) > 0:
+        fig.add_trace(go.Scatter3d(
+            x=sv3[:, 0], y=sv3[:, 1], z=sv3[:, 2],
+            mode='markers', name='3D SV',
+            marker=dict(size=7, color=C_GOLD, opacity=0.95,
+                         line=dict(width=1.5, color='#FFFFFF'),
+                         symbol='diamond'),
+            hovertemplate='SV<extra></extra>',
+        ))
+
+    # 決策平面 (Surface) — 最小化參數以確保相容性
+    fig.add_trace(go.Surface(
+        x=Xp, y=Yp, z=Zp,
+        colorscale=[[0, 'rgba(180,210,255,0.18)'], [1, 'rgba(180,210,255,0.42)']],
+        showscale=False,
+        opacity=0.6,
+        contours=dict(
+            x=dict(show=True, color='rgba(160,200,255,0.2)', width=1),
+            y=dict(show=True, color='rgba(160,200,255,0.2)', width=1),
+        ),
+        name='SVM 決策平面',
+        hovertemplate='z=%{z:.1f}<extra>決策面</extra>',
+    ))
+
+    # 地板投影曲線
+    if len(curve) > 1:
+        fig.add_trace(go.Scatter3d(
+            x=curve[:, 0], y=curve[:, 1], z=np.zeros(len(curve)),
+            mode='lines', name='2D 邊界',
+            line=dict(color=C_CURVE, width=2.5),
+            hovertemplate='投影邊界<extra></extra>',
+        ))
+
+    # 場景設定
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        scene=dict(
+            xaxis=dict(title='x₁', showgrid=True, gridcolor=C_GRID,
+                        backgroundcolor='rgba(0,0,0,0)',
+                        range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
+            yaxis=dict(title='x₂', showgrid=True, gridcolor=C_GRID,
+                        backgroundcolor='rgba(0,0,0,0)',
+                        range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
+            zaxis=dict(title='Φ(z)', showgrid=True, gridcolor=C_GRID,
+                        backgroundcolor='rgba(0,0,0,0)',
+                        range=[-0.5, zs+3], title_font=dict(color='#94A3B8')),
+            camera=dict(eye=dict(x=1.6, y=1.6, z=1.2)),
+        ),
+        margin=dict(l=0, r=0, t=20, b=0),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
+                     font=dict(color='#94A3B8'), bgcolor='rgba(0,0,0,0)'),
+        hovermode='closest',
+        height=650,
+    )
+    return fig
+
+
+# ============================================================
+# STREAMLIT 主頁面
+# ============================================================
 
 def main():
-    st.set_page_config(page_title="SVM Kernel 3D",page_icon="🔮",layout="wide")
-    d=_gen();j=json.dumps(d)
-    h=THREE_HTML.replace("__DATA__",j)
-    components.html(h,height=750,scrolling=True)
+    st.set_page_config(
+        page_title="SVM 核方法 — 3D 視覺化",
+        page_icon="🔮",
+        layout="wide",
+    )
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-if __name__=="__main__":main()
+    # ============================================================
+    # 側邊欄 — 互動控制
+    # ============================================================
+    with st.sidebar:
+        st.markdown("""
+        <div style="padding:8px 0 16px 0;">
+            <div style="font-size:1.3rem;font-weight:700;color:#E2E8F0;">🔮 SVM 核方法</div>
+            <div style="font-size:0.8rem;color:#64748B;">Kernel Trick · 3D 視覺化</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("### 🎛 參數控制")
+        n_particles = st.slider(
+            "粒子數量（每類）", min_value=30, max_value=120,
+            value=DEFAULT_N, step=10,
+            help="調整每類別生成的資料點數量",
+        )
+        z_scale = st.slider(
+            "Z 軸放大倍率", min_value=2.0, max_value=15.0,
+            value=DEFAULT_Z_SCALE, step=0.5,
+            help="核映射 Φ(z) 的視覺放大倍數，越大代表 3D 分離越明顯",
+        )
+
+        st.markdown("---")
+        st.markdown("### 📍 狀態選擇")
+
+        STATES = ["線性 SVM", "非線性資料", "核方法 3D"]
+        STATE_KEYS = ["linear", "nonlinear", "kernel3d"]
+
+        # 讀取目前狀態
+        current_idx = st.session_state.get("_state_idx", 0)
+        state_label = STATES[current_idx]
+
+        # 三個按鈕橫排
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("📐 線性", use_container_width=True,
+                         type="primary" if current_idx == 0 else "secondary",
+                         key="btn_linear"):
+                st.session_state["_state_idx"] = 0
+                st.rerun()
+        with c2:
+            if st.button("🔄 非線性", use_container_width=True,
+                         type="primary" if current_idx == 1 else "secondary",
+                         key="btn_nonlinear"):
+                st.session_state["_state_idx"] = 1
+                st.rerun()
+        with c3:
+            if st.button("🧊 3D", use_container_width=True,
+                         type="primary" if current_idx == 2 else "secondary",
+                         key="btn_kernel3d"):
+                st.session_state["_state_idx"] = 2
+                st.rerun()
+
+        # 互動提示
+        st.markdown("---")
+        st.caption("💡 試試調整上方滑桿，改變粒子數量與 Z 軸倍率。")
+        st.caption("🖱 在圖表上拖曳可旋轉/縮放/平移。")
+
+        st.markdown("---")
+        st.markdown("### 🎨 圖例")
+        legend_items = [
+            (C_TEAL, "類別 A"),
+            (C_PURPLE, "類別 B"),
+            (C_GOLD, "支持向量"),
+            ("#FFFFFF", "決策邊界"),
+            (C_MARGIN, "邊界線 ±1"),
+            (C_CURVE, "投影曲線"),
+        ]
+        for color, label in legend_items:
+            st.markdown(
+                f'<div style="display:flex;align-items:center;margin:6px 0;font-size:0.85rem;color:#E2E8F0;">'
+                f'<span class="legend-dot" style="background:{color};box-shadow:0 0 6px {color}44;"></span>{label}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("---")
+        st.caption(f"目前參數：n={n_particles}, z={z_scale:.1f}")
+
+    # ============================================================
+    # 資料載入（參數改變時自動重建）
+    # ============================================================
+    st.session_state["_n_particles"] = n_particles
+    st.session_state["_z_scale"] = z_scale
+    data = get_data(n_particles, z_scale)
+    w3, b3 = data["w3"], data["b3"]
+    zs = data["z_scale"]
+
+    # ============================================================
+    # 主內容區
+    # ============================================================
+    st.markdown('<div class="main-title">SVM 核方法：3D 互動視覺化</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="subtitle">展示支持向量機如何透過核方法將非線性資料映射到高維空間，使其線性可分</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ---- 資訊卡片 ----
+    info_map = {
+        "線性 SVM": {
+            "formula": "f(x) = wᵀx + b",
+            "body": (
+                "資料 <b style='color:#22D3EE'>完美線性可分</b>。"
+                "SVM 找到最大化邊界的 <b style='color:#E2E8F0'>最佳超平面</b>。<br>"
+                "白色實線為決策邊界 wᵀx+b=0，金黃虛線為邊界 wᵀx+b=±1，金色空心圓為支持向量。<br>"
+                "<i style='color:#64748B;font-size:0.85rem;'>💡 拖曳滑鼠可縮放及平移圖表</i>"
+            ),
+        },
+        "非線性資料": {
+            "formula": "不存在線性分隔器 (ℝ²)",
+            "body": (
+                "資料 <b style='color:#FBBF24'>無法</b> 用一條直線分開。"
+                "紅色（碧藍）群聚於中心，藍色（霓虹紫）分布於外環。<br>"
+                "<b style='color:#A855F7'>核方法</b> 將其映射到更高維度的特徵空間，使其變得可線性分離。<br>"
+                "<i style='color:#64748B;font-size:0.85rem;'>💡 點擊「3D」按鈕查看核方法效果</i>"
+            ),
+        },
+        "核方法 3D": {
+            "formula": f"Φ(x₁,x₂) = (x₁, x₂, {zs:.0f}·e<sup>−(x₁²+x₂²)</sup>)",
+            "body": (
+                f"資料經核函數 <b style='color:#22D3EE'>提升到 3D 特徵空間</b>！<br>"
+                f"SVM 決策平面：{w3[0]:.2f}x₁ + {w3[1]:.2f}x₂ + {w3[2]:.2f}z + {b3:.2f} = 0<br><br>"
+                f"半透明面為 <b style='color:#E2E8F0'>3D 決策平面</b>，"
+                f"綠色曲線為其 <b style='color:#4ADE80'>2D 投影邊界</b>。<br>"
+                f"金色菱形為 3D 支持向量。<br>"
+                f"<i style='color:#64748B;font-size:0.85rem;'>💡 拖曳旋轉、滾輪縮放、右鍵平移。試試調整左側 Z 軸倍率滑桿！</i>"
+            ),
+        },
+    }
+    info = info_map[STATES[current_idx]]
+    st.markdown(
+        f"""
+        <div class="card">
+            <h3>{STATES[current_idx]}</h3>
+            <p style="color:#FBBF24;font-family:monospace;font-size:1rem;">{info['formula']}</p>
+            <p>{info['body']}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ---- 圖表 ----
+    try:
+        if current_idx == 0:
+            fig = build_linear_figure(data)
+        elif current_idx == 1:
+            fig = build_nonlinear_figure(data)
+        else:
+            fig = build_kernel_3d_figure(data)
+
+        st.plotly_chart(fig, use_container_width=True, config={
+            'displayModeBar': True,
+            'modeBarButtonsToRemove': ['lasso2d', 'select2d', 'sendDataToCloud'],
+            'displaylogo': False,
+            'scrollZoom': True,
+        })
+    except Exception as e:
+        st.error(f"圖表渲染失敗：{e}")
+        st.code(str(e))
+
+    # 底部提示
+    if current_idx == 2:
+        st.caption(
+            f"⚠ 此為特徵空間提升的直觀示意（z = {zs:.0f}·e<sup>−(x²+y²)</sup>），"
+            "並非真實 RBF 核的無限維映射。拖曳圖表可旋轉視角、檢視三維分離結構。"
+        )
+
+
+if __name__ == "__main__":
+    main()
