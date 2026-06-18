@@ -462,8 +462,8 @@ def build_kernel_3d_figure(data):
         showscale=False,
         opacity=0.6,
         contours=dict(
-            x=dict(show=True, color='rgba(160,200,255,0.2)', width=0.5),
-            y=dict(show=True, color='rgba(160,200,255,0.2)', width=0.5),
+            x=dict(show=True, color='rgba(160,200,255,0.2)', width=1),
+            y=dict(show=True, color='rgba(160,200,255,0.2)', width=1),
         ),
         name='SVM 決策平面',
         hovertemplate='z=%{z:.1f}<extra>決策面</extra>',
