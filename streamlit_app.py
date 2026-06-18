@@ -14,30 +14,27 @@ from plotly.subplots import make_subplots
 # ============================================================
 # 常數 & 配色
 # ============================================================
-Z_SCALE = 8.0
-N_PER_CLASS = 80
-RNG = np.random.RandomState(42)
-
-# 莫蘭迪 / 科技感配色
-C_TEAL   = '#22D3EE'   # 類別 A — 碧藍
+DEFAULT_Z_SCALE = 8.0
+DEFAULT_N = 80
+C_TEAL   = '#22D3EE'
 C_TEAL_BRIGHT = '#67E8F9'
-C_PURPLE = '#A855F7'   # 類別 B — 霓虹紫
+C_PURPLE = '#A855F7'
 C_PURPLE_BRIGHT = '#C084FC'
-C_GOLD   = '#FBBF24'   # 支持向量／邊界強調
-C_SURFACE = 'rgba(200,220,255,0.32)'  # 決策平面
-C_SURFACE_LINE = 'rgba(160,200,255,0.55)'  # 平面網格線
-C_CURVE  = '#4ADE80'   # 投影決策曲線
-C_MARGIN = '#FDE68A'   # 邊界線
-C_AXIS   = '#475569'   # 座標軸
-C_GRID   = 'rgba(100,116,139,0.12)'  # 背景格線
+C_GOLD   = '#FBBF24'
+C_SURFACE = 'rgba(200,220,255,0.32)'
+C_SURFACE_LINE = 'rgba(160,200,255,0.55)'
+C_CURVE  = '#4ADE80'
+C_MARGIN = '#FDE68A'
+C_AXIS   = '#475569'
+C_GRID   = 'rgba(100,116,139,0.12)'
 
 # ============================================================
-# 資料生成（數學邏輯不變）
+# 資料生成（數學邏輯不變，接受參數以支援互動）
 # ============================================================
 
-def _generate_datasets(n_per_class=N_PER_CLASS):
+def _generate_datasets(n_per_class=DEFAULT_N, z_scale=DEFAULT_Z_SCALE):
     """生成線性 + 非線性資料集，計算 SVM 決策面參數。"""
-    rng = RNG
+    rng = np.random.RandomState(42)
 
     # 線性資料
     class_a_lin = rng.randn(n_per_class, 2) * 1.2 + np.array([-3, -3])
@@ -78,10 +75,10 @@ def _generate_datasets(n_per_class=N_PER_CLASS):
     # 核函數
     def _phi(pts):
         r_sq = np.sum(pts**2, axis=1)
-        return np.column_stack([pts, Z_SCALE * np.exp(-r_sq)])
+        return np.column_stack([pts, z_scale * np.exp(-r_sq)])
 
     def _kz(pts):
-        return Z_SCALE * np.exp(-np.sum(pts**2, axis=1))
+        return z_scale * np.exp(-np.sum(pts**2, axis=1))
 
     phi_a = _phi(class_a_nonlin)
     phi_b = _phi(class_b_nonlin)
@@ -103,18 +100,17 @@ def _generate_datasets(n_per_class=N_PER_CLASS):
     sv_3d_phi = np.vstack([phi_a[sv_a], phi_b[sv_b]])
 
     # 2D 投影邊界曲線
-    curve_2d = _compute_boundary_curve(w3[0], w3[1], w3[2], b3)
+    curve_2d = _compute_boundary_curve(w3[0], w3[1], w3[2], b3, z_scale)
 
-    # 3D 平面網格（用於 surface 繪製）
-    plane_pts = _make_plane_surface(w3[0], w3[1], w3[2], b3)
+    # 3D 平面網格
+    plane_pts = _make_plane_surface(w3[0], w3[1], w3[2], b3, z_scale)
 
     # 線性 SV 座標
-    sv_linear_pts = np.vstack([
-        X_linear[sv_2d],
-    ])
+    sv_linear_pts = np.vstack([X_linear[sv_2d]])
 
     return {
         "n": n_per_class,
+        "z_scale": z_scale,
         "a_lin": class_a_lin, "b_lin": class_b_lin,
         "a_nl": class_a_nonlin, "b_nl": class_b_nonlin,
         "znr": znr, "znb": znb,
@@ -130,20 +126,20 @@ def _generate_datasets(n_per_class=N_PER_CLASS):
     }
 
 
-def _compute_boundary_curve(a, b, c, d, n_angles=150):
+def _compute_boundary_curve(a, b, c, d, z_scale=DEFAULT_Z_SCALE, n_angles=150):
     """取樣 2D 決策邊界曲線（二分搜尋半徑）。"""
     pts = []
     for i in range(n_angles):
         theta = 2*np.pi*i/n_angles
         ct, st = np.cos(theta), np.sin(theta)
         lo, hi = 0.0, 7.0
-        flo = a*lo*ct + b*lo*st + c*Z_SCALE*np.exp(-lo*lo) + d
-        fhi = a*hi*ct + b*hi*st + c*Z_SCALE*np.exp(-hi*hi) + d
+        flo = a*lo*ct + b*lo*st + c*z_scale*np.exp(-lo*lo) + d
+        fhi = a*hi*ct + b*hi*st + c*z_scale*np.exp(-hi*hi) + d
         if flo*fhi > 0:
             continue
         for _ in range(30):
             mid = (lo+hi)/2
-            fm = a*mid*ct + b*mid*st + c*Z_SCALE*np.exp(-mid*mid) + d
+            fm = a*mid*ct + b*mid*st + c*z_scale*np.exp(-mid*mid) + d
             if abs(fm) < 0.005:
                 break
             if flo*fm < 0:
@@ -155,7 +151,7 @@ def _compute_boundary_curve(a, b, c, d, n_angles=150):
     return np.array(pts)
 
 
-def _make_plane_surface(a, b, c, d, extent=7.0, res=40):
+def _make_plane_surface(a, b, c, d, z_scale=DEFAULT_Z_SCALE, extent=7.0, res=40):
     """在 XY 網格上計算決策平面的 Z 值。"""
     xs = np.linspace(-extent, extent, res)
     ys = np.linspace(-extent, extent, res)
@@ -164,8 +160,7 @@ def _make_plane_surface(a, b, c, d, extent=7.0, res=40):
         Z = -(a*X + b*Y + d) / c
     else:
         Z = np.zeros_like(X)
-    # 限制在可視範圍內
-    Z = np.clip(Z, -2, Z_SCALE + 4)
+    Z = np.clip(Z, -2, z_scale + 4)
     return X, Y, Z
 
 
@@ -173,10 +168,16 @@ def _make_plane_surface(a, b, c, d, extent=7.0, res=40):
 # 一次性生成資料（session_state 快取）
 # ============================================================
 
-def get_data():
-    if "data" not in st.session_state:
-        st.session_state.data = _generate_datasets()
-    return st.session_state.data
+def get_data(n_particles=None, z_scale=None):
+    """Get or regenerate data. Regenerates if parameters changed."""
+    key_n = st.session_state.get("_n_particles", DEFAULT_N)
+    key_z = st.session_state.get("_z_scale", DEFAULT_Z_SCALE)
+    n = n_particles if n_particles is not None else key_n
+    z = z_scale if z_scale is not None else key_z
+    cache_key = f"data_n{n}_z{z}"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = _generate_datasets(n_per_class=n, z_scale=z)
+    return st.session_state[cache_key]
 
 
 # ============================================================
@@ -409,25 +410,24 @@ def build_kernel_3d_figure(data):
     fig = go.Figure()
     a_nl, b_nl = data["a_nl"], data["b_nl"]
     znr, znb = data["znr"], data["znb"]
-    w3, b3 = data["w3"], data["b3"]
     sv3 = data["sv_3d_phi"]
     curve = data["curve_2d"]
     Xp, Yp, Zp = data["plane_pts"]
     n = data["n"]
+    zs = data["z_scale"]
 
-    # 建立 SV 集合（以 3D 座標比對）
+    # 建立 SV 集合
     sv_set = set()
     for sv in sv3:
         sv_set.add((round(sv[0], 3), round(sv[1], 3), round(sv[2], 2)))
 
-    # 非 SV 粒子
     mask_a = np.ones(n, dtype=bool)
     mask_b = np.ones(n, dtype=bool)
     for i in range(n):
-        key_a = (round(a_nl[i,0],3), round(a_nl[i,1],3), round(znr[i],2))
-        key_b = (round(b_nl[i,0],3), round(b_nl[i,1],3), round(znb[i],2))
-        if key_a in sv_set: mask_a[i] = False
-        if key_b in sv_set: mask_b[i] = False
+        if (round(a_nl[i,0],3), round(a_nl[i,1],3), round(znr[i],2)) in sv_set:
+            mask_a[i] = False
+        if (round(b_nl[i,0],3), round(b_nl[i,1],3), round(znb[i],2)) in sv_set:
+            mask_b[i] = False
 
     # Class A
     fig.add_trace(go.Scatter3d(
@@ -448,70 +448,35 @@ def build_kernel_3d_figure(data):
     if len(sv3) > 0:
         fig.add_trace(go.Scatter3d(
             x=sv3[:, 0], y=sv3[:, 1], z=sv3[:, 2],
-            mode='markers', name='3D 支持向量',
+            mode='markers', name='3D SV',
             marker=dict(size=7, color=C_GOLD, opacity=0.95,
                          line=dict(width=1.5, color='#FFFFFF'),
                          symbol='diamond'),
-            hovertemplate='SV (3D)<extra></extra>',
+            hovertemplate='SV<extra></extra>',
         ))
 
-    # 投影線（粒子 → 地板）
-    for i in range(0, 2*n, 6):
-        if i < n:
-            xi, yi, zi = a_nl[i, 0], a_nl[i, 1], znr[i]
-            c_proj = C_TEAL
-        else:
-            idx = i - n
-            xi, yi, zi = b_nl[idx,0], b_nl[idx,1], znb[idx]
-            c_proj = C_PURPLE
-        if zi < 0.2: continue
-        fig.add_trace(go.Scatter3d(
-            x=[xi, xi], y=[yi, yi], z=[zi, 0],
-            mode='lines', showlegend=False,
-            line=dict(color=c_proj, width=0.6),
-            opacity=0.25, hoverinfo='skip',
-        ))
-
-    # 決策平面 (Surface)
+    # 決策平面 (Surface) — 最小化參數以確保相容性
     fig.add_trace(go.Surface(
         x=Xp, y=Yp, z=Zp,
-        colorscale=[[0, 'rgba(180,210,255,0.15)'], [1, 'rgba(180,210,255,0.38)']],
+        colorscale=[[0, 'rgba(180,210,255,0.18)'], [1, 'rgba(180,210,255,0.42)']],
         showscale=False,
-        opacity=0.55,
-        surfacecolor=np.ones_like(Zp) * 0.5,
-        cmin=0, cmax=1,
+        opacity=0.6,
         contours=dict(
-            x=dict(show=True, color='rgba(160,200,255,0.25)', width=0.6, highlight=False),
-            y=dict(show=True, color='rgba(160,200,255,0.25)', width=0.6, highlight=False),
+            x=dict(show=True, color='rgba(160,200,255,0.2)', width=0.5),
+            y=dict(show=True, color='rgba(160,200,255,0.2)', width=0.5),
         ),
         name='SVM 決策平面',
-        hovertemplate='z=%{z:.1f}<extra>SVM 決策面</extra>',
-        lighting=dict(ambient=0.6, diffuse=0.8, roughness=0.1, specular=1.2),
+        hovertemplate='z=%{z:.1f}<extra>決策面</extra>',
     ))
 
     # 地板投影曲線
     if len(curve) > 1:
         fig.add_trace(go.Scatter3d(
             x=curve[:, 0], y=curve[:, 1], z=np.zeros(len(curve)),
-            mode='lines', name='投影決策邊界',
+            mode='lines', name='2D 邊界',
             line=dict(color=C_CURVE, width=2.5),
-            hovertemplate='決策邊界 (2D)<extra></extra>',
+            hovertemplate='投影邊界<extra></extra>',
         ))
-
-    # 質心標記
-    rc, bc = data["red_centroid_3d"], data["blue_centroid_3d"]
-    fig.add_trace(go.Scatter3d(
-        x=[rc[0]], y=[rc[1]], z=[rc[2]],
-        mode='markers', name='A 質心',
-        marker=dict(size=6, color=C_TEAL_BRIGHT, symbol='x', opacity=0.8),
-        showlegend=False, hovertemplate='A 質心<extra></extra>',
-    ))
-    fig.add_trace(go.Scatter3d(
-        x=[bc[0]], y=[bc[1]], z=[bc[2]],
-        mode='markers', name='B 質心',
-        marker=dict(size=6, color=C_PURPLE_BRIGHT, symbol='x', opacity=0.8),
-        showlegend=False, hovertemplate='B 質心<extra></extra>',
-    ))
 
     # 場景設定
     fig.update_layout(
@@ -526,11 +491,8 @@ def build_kernel_3d_figure(data):
                         range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
             zaxis=dict(title='Φ(z)', showgrid=True, gridcolor=C_GRID,
                         backgroundcolor='rgba(0,0,0,0)',
-                        range=[-0.5, Z_SCALE+2], title_font=dict(color='#94A3B8')),
-            camera=dict(
-                eye=dict(x=1.6, y=1.6, z=1.2),
-                up=dict(x=0, y=0, z=1),
-            ),
+                        range=[-0.5, zs+3], title_font=dict(color='#94A3B8')),
+            camera=dict(eye=dict(x=1.6, y=1.6, z=1.2)),
         ),
         margin=dict(l=0, r=0, t=20, b=0),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
@@ -553,11 +515,8 @@ def main():
     )
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-    data = get_data()
-    w3, b3 = data["w3"], data["b3"]
-
     # ============================================================
-    # 側邊欄
+    # 側邊欄 — 互動控制
     # ============================================================
     with st.sidebar:
         st.markdown("""
@@ -567,18 +526,56 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("### 狀態選擇")
-        state = st.radio(
-            "state",
-            options=["線性 SVM", "非線性資料", "核方法 3D"],
-            index=0,
-            label_visibility="collapsed",
-            key="state_selector",
+        st.markdown("### 🎛 參數控制")
+        n_particles = st.slider(
+            "粒子數量（每類）", min_value=30, max_value=120,
+            value=DEFAULT_N, step=10,
+            help="調整每類別生成的資料點數量",
+        )
+        z_scale = st.slider(
+            "Z 軸放大倍率", min_value=2.0, max_value=15.0,
+            value=DEFAULT_Z_SCALE, step=0.5,
+            help="核映射 Φ(z) 的視覺放大倍數，越大代表 3D 分離越明顯",
         )
 
         st.markdown("---")
-        st.markdown("### 圖例")
+        st.markdown("### 📍 狀態選擇")
 
+        STATES = ["線性 SVM", "非線性資料", "核方法 3D"]
+        STATE_KEYS = ["linear", "nonlinear", "kernel3d"]
+
+        # 讀取目前狀態
+        current_idx = st.session_state.get("_state_idx", 0)
+        state_label = STATES[current_idx]
+
+        # 三個按鈕橫排
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("📐 線性", use_container_width=True,
+                         type="primary" if current_idx == 0 else "secondary",
+                         key="btn_linear"):
+                st.session_state["_state_idx"] = 0
+                st.rerun()
+        with c2:
+            if st.button("🔄 非線性", use_container_width=True,
+                         type="primary" if current_idx == 1 else "secondary",
+                         key="btn_nonlinear"):
+                st.session_state["_state_idx"] = 1
+                st.rerun()
+        with c3:
+            if st.button("🧊 3D", use_container_width=True,
+                         type="primary" if current_idx == 2 else "secondary",
+                         key="btn_kernel3d"):
+                st.session_state["_state_idx"] = 2
+                st.rerun()
+
+        # 互動提示
+        st.markdown("---")
+        st.caption("💡 試試調整上方滑桿，改變粒子數量與 Z 軸倍率。")
+        st.caption("🖱 在圖表上拖曳可旋轉/縮放/平移。")
+
+        st.markdown("---")
+        st.markdown("### 🎨 圖例")
         legend_items = [
             (C_TEAL, "類別 A"),
             (C_PURPLE, "類別 B"),
@@ -596,9 +593,16 @@ def main():
             )
 
         st.markdown("---")
-        st.caption(f"粒子數：{data['n']} × 2 類別")
-        st.caption(f"3D SV：{len(data['sv_3d_phi'])} 個")
-        st.caption(f"邊界點：{len(data['curve_2d'])} 個")
+        st.caption(f"目前參數：n={n_particles}, z={z_scale:.1f}")
+
+    # ============================================================
+    # 資料載入（參數改變時自動重建）
+    # ============================================================
+    st.session_state["_n_particles"] = n_particles
+    st.session_state["_z_scale"] = z_scale
+    data = get_data(n_particles, z_scale)
+    w3, b3 = data["w3"], data["b3"]
+    zs = data["z_scale"]
 
     # ============================================================
     # 主內容區
@@ -616,7 +620,8 @@ def main():
             "body": (
                 "資料 <b style='color:#22D3EE'>完美線性可分</b>。"
                 "SVM 找到最大化邊界的 <b style='color:#E2E8F0'>最佳超平面</b>。<br>"
-                "白色實線為決策邊界 wᵀx+b=0，金黃虛線為邊界 wᵀx+b=±1，金色空心圓為支持向量。"
+                "白色實線為決策邊界 wᵀx+b=0，金黃虛線為邊界 wᵀx+b=±1，金色空心圓為支持向量。<br>"
+                "<i style='color:#64748B;font-size:0.85rem;'>💡 拖曳滑鼠可縮放及平移圖表</i>"
             ),
         },
         "非線性資料": {
@@ -624,25 +629,27 @@ def main():
             "body": (
                 "資料 <b style='color:#FBBF24'>無法</b> 用一條直線分開。"
                 "紅色（碧藍）群聚於中心，藍色（霓虹紫）分布於外環。<br>"
-                "<b style='color:#A855F7'>核方法</b> 將其映射到更高維度的特徵空間，使其變得可線性分離。"
+                "<b style='color:#A855F7'>核方法</b> 將其映射到更高維度的特徵空間，使其變得可線性分離。<br>"
+                "<i style='color:#64748B;font-size:0.85rem;'>💡 點擊「3D」按鈕查看核方法效果</i>"
             ),
         },
         "核方法 3D": {
-            "formula": f"Φ(x₁,x₂) = (x₁, x₂, {Z_SCALE:.0f}·e<sup>−(x₁²+x₂²)</sup>)",
+            "formula": f"Φ(x₁,x₂) = (x₁, x₂, {zs:.0f}·e<sup>−(x₁²+x₂²)</sup>)",
             "body": (
                 f"資料經核函數 <b style='color:#22D3EE'>提升到 3D 特徵空間</b>！<br>"
                 f"SVM 決策平面：{w3[0]:.2f}x₁ + {w3[1]:.2f}x₂ + {w3[2]:.2f}z + {b3:.2f} = 0<br><br>"
                 f"半透明面為 <b style='color:#E2E8F0'>3D 決策平面</b>，"
                 f"綠色曲線為其 <b style='color:#4ADE80'>2D 投影邊界</b>。<br>"
-                f"金色菱形為 3D 支持向量。拖曳旋轉、滾輪縮放。"
+                f"金色菱形為 3D 支持向量。<br>"
+                f"<i style='color:#64748B;font-size:0.85rem;'>💡 拖曳旋轉、滾輪縮放、右鍵平移。試試調整左側 Z 軸倍率滑桿！</i>"
             ),
         },
     }
-    info = info_map[state]
+    info = info_map[STATES[current_idx]]
     st.markdown(
         f"""
         <div class="card">
-            <h3>{state}</h3>
+            <h3>{STATES[current_idx]}</h3>
             <p style="color:#FBBF24;font-family:monospace;font-size:1rem;">{info['formula']}</p>
             <p>{info['body']}</p>
         </div>
@@ -651,23 +658,28 @@ def main():
     )
 
     # ---- 圖表 ----
-    if state == "線性 SVM":
-        fig = build_linear_figure(data)
-    elif state == "非線性資料":
-        fig = build_nonlinear_figure(data)
-    else:
-        fig = build_kernel_3d_figure(data)
+    try:
+        if current_idx == 0:
+            fig = build_linear_figure(data)
+        elif current_idx == 1:
+            fig = build_nonlinear_figure(data)
+        else:
+            fig = build_kernel_3d_figure(data)
 
-    st.plotly_chart(fig, use_container_width=True, config={
-        'displayModeBar': True,
-        'modeBarButtonsToRemove': ['lasso2d', 'select2d', 'sendDataToCloud'],
-        'displaylogo': False,
-    })
+        st.plotly_chart(fig, use_container_width=True, config={
+            'displayModeBar': True,
+            'modeBarButtonsToRemove': ['lasso2d', 'select2d', 'sendDataToCloud'],
+            'displaylogo': False,
+            'scrollZoom': True,
+        })
+    except Exception as e:
+        st.error(f"圖表渲染失敗：{e}")
+        st.code(str(e))
 
     # 底部提示
-    if state == "核方法 3D":
+    if current_idx == 2:
         st.caption(
-            "⚠ 此為特徵空間提升的直觀示意（z = 8·e<sup>−(x²+y²)</sup>），"
+            f"⚠ 此為特徵空間提升的直觀示意（z = {zs:.0f}·e<sup>−(x²+y²)</sup>），"
             "並非真實 RBF 核的無限維映射。拖曳圖表可旋轉視角、檢視三維分離結構。"
         )
 
