@@ -245,13 +245,19 @@ canvas{display:block}
 <div id="note-banner">⚠ 此為特徵空間提升的直觀示意，並非真實的無限維 RBF 特徵空間</div>
 <div id="fps-counter">FPS: --</div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"
-    onload="document.getElementById('status-msg').textContent='Three.js 已載入'"
-    onerror="document.getElementById('err').style.display='block';document.getElementById('err').innerHTML='<b>Three.js 載入失敗</b><br>CDN 連線異常'">
+<script>
+// 雙 CDN 備援：若 jsdelivr 失敗，嘗試 cdnjs
+var __three_src = 'https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js';
+var __three_fallback = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+var __orbit_src = 'https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js';
 </script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js"
-    onload="document.getElementById('status-msg').textContent='OrbitControls 已載入'"
-    onerror="document.getElementById('status-msg').textContent='OrbitControls 載入失敗（將使用基本視角）'">
+<script id="three-script" src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"
+    onload="document.getElementById('status-msg').textContent='Three.js ✓'"
+    onerror="var s=document.getElementById('three-script');s.src=__three_fallback;s.onerror=function(){document.getElementById('err').style.display='block';document.getElementById('err').innerHTML='<b>Three.js 載入失敗</b><br>jsdelivr 與 cdnjs 皆無法連線。<br>請檢查網路或稍後再試。';document.getElementById('status').style.display='none';}">
+</script>
+<script id="orbit-script" src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js"
+    onload="document.getElementById('status-msg').textContent='OrbitControls ✓'"
+    onerror="document.getElementById('status-msg').textContent='OrbitControls 不可用（將無旋轉功能）';">
 </script>
 
 <script>
@@ -429,7 +435,7 @@ function refSV(op, use3D){
     for(var i=0;i<all.length;i++){
         var isSV = use3D ? all[i]._sv3 : all[i].sv2;
         if(!isSV)continue;
-        var idx=i<N?i:N-i-N;
+        var idx=i<N?i:i-N;
         var arr=i<N?ra:ba;
         var px=arr[idx*3], py=arr[idx*3+1], pz=arr[idx*3+2];
         var ring=new THREE.Mesh(svrg,new THREE.MeshBasicMaterial({color:0xffff44,transparent:true,opacity:op,depthTest:true}));
@@ -553,7 +559,7 @@ function uPL(op){
     while(plg.children.length>0)plg.remove(plg.children[0]);
     if(op<=0)return;
     for(var i=0;i<N*2;i+=4){
-        var idx=i<N?i:N-i-N;
+        var idx=i<N?i:i-N;
         var arr=i<N?ra:ba;
         var px=arr[idx*3], py=arr[idx*3+1], pz=arr[idx*3+2];
         if(pz<.1)continue;
@@ -574,7 +580,7 @@ var SU=[
      hx:'資料 <span class="hl">完美線性可分</span>。<br>SVM 找到 <span class="hl">最佳超平面</span>，<br>最大化兩個類別之間的邊界距離。<br><br><span style="color:#0f0">▬</span> 決策邊界：w<sup>T</sup>x + b = 0<br><span class="wn">▬</span> 邊界線：w<sup>T</sup>x + b = ±1<br><span class="wn">◯</span> 支持向量'},
     {nm:'非線性資料',cl:'#f0f',fm:'在 ℝ² 空間中不存在線性分隔器',
      hx:'資料 <span class="wn">無法</span> 用直線分開。<br>紅色中心群聚，藍色外圍環繞。<br><br><span class="wn">？</span> SVM 如何處理？<br><span style="color:#888;">→</span> <b>核方法</b> 映射到高維空間<br>使資料 <span class="hl">變得線性可分</span>！'},
-    {nm:'核方法 3D — SVM 決策面',cl:'#ff0',fm:'Φ(x,y) = (x, y, '+Z_SCALE.toFixed(0)+'·e<sup>−(x²+y²)</sup>)',
+    {nm:'核方法 3D — SVM 決策面',cl:'#ff0',fm:'Φ(x,y) = (x, y, 8·e<sup>−(x²+y²)</sup>)',
      hx:'資料提升到 3D 後，SVM 找到<br><span style="color:#0ff">▭</span> <b>真實決策平面</b>：<br>'+DATA.plane_a.toFixed(2)+'x + '+DATA.plane_b.toFixed(2)+'y + '+DATA.plane_c.toFixed(2)+'z + '+DATA.plane_d.toFixed(2)+' = 0<br><br><span style="color:#0f0">○</span> <b>投影決策曲線</b>（地面）<br><span class="wn">◯</span> 3D 支持向量<br><br><span class="hl">在 3D 特徵空間中<br>資料完美線性可分！</span>'}
 ];
 function uUI(){
@@ -736,6 +742,10 @@ def main():
         data = _generate_datasets()
         data_json = json.dumps(data, indent=None, separators=(",", ":"))
         html = THREEJS_HTML.replace("__DATA__", data_json)
+
+        # 診斷：確認 Python 端正常
+        st.caption(f"✅ 資料已生成：{data['n']} 粒子/類別，{len(data['sv_3d_phi'])} 個 3D SV，{len(data['boundary_curve_2d'])} 個邊界點")
+
         components.html(html, height=780, scrolling=True)
     except Exception as e:
         st.error(f"應用程式錯誤：{e}")
