@@ -393,20 +393,39 @@ def build_linear_figure(data, t=1.0):
     return fig
 
 
-def build_nonlinear_figure(data):
-    """非線性資料 — 2D 散點，紅中心藍外環，無線性分隔器。"""
-    fig = go.Figure()
+def build_nonlinear_figure(data, t=1.0):
+    """
+    非線性資料 — 2D 散點 + 微動態擾動 (Jitter)。
+    t=0~1: 滑桿數值驅動粒子在原始位置附近產生微小隨機偏移，
+           模擬資料的「動態漂移」效果，座標軸固定不晃動。
+    """
     a_nl, b_nl = data["a_nl"], data["b_nl"]
+    n = data["n"]
+
+    # ---- 微動態擾動：以 t*100 作為偽隨機種子 ----
+    # 使用 t 決定偏移相位，振幅控制在 ±0.12 以內，保持視覺穩定
+    seed = int(t * 1000)
+    rng_jitter = np.random.RandomState(seed)
+
+    jitter_a = rng_jitter.uniform(-0.10, 0.10, size=(n, 2))
+    jitter_b = rng_jitter.uniform(-0.10, 0.10, size=(n, 2))
+
+    ax = a_nl[:, 0] + jitter_a[:, 0]
+    ay = a_nl[:, 1] + jitter_a[:, 1]
+    bx = b_nl[:, 0] + jitter_b[:, 0]
+    by = b_nl[:, 1] + jitter_b[:, 1]
+
+    fig = go.Figure()
 
     fig.add_trace(go.Scatter(
-        x=a_nl[:, 0], y=a_nl[:, 1],
+        x=ax, y=ay,
         mode='markers', name='類別 A',
         marker=dict(size=8, color=C_TEAL, opacity=0.8,
                      line=dict(width=0.5, color='rgba(255,255,255,0.15)')),
         hovertemplate='x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>',
     ))
     fig.add_trace(go.Scatter(
-        x=b_nl[:, 0], y=b_nl[:, 1],
+        x=bx, y=by,
         mode='markers', name='類別 B',
         marker=dict(size=8, color=C_PURPLE, opacity=0.8,
                      line=dict(width=0.5, color='rgba(255,255,255,0.15)')),
@@ -736,7 +755,7 @@ def main():
         if current_idx == 0:
             fig = build_linear_figure(data, t_val)
         elif current_idx == 1:
-            fig = build_nonlinear_figure(data)
+            fig = build_nonlinear_figure(data, t_val)
         else:
             fig = build_kernel_3d_figure(data, t_val)
 
