@@ -1,149 +1,122 @@
 """
 streamlit_app.py — SVM 核方法 3D 互動視覺化
 ============================================
-展示支持向量機 (SVM) 如何透過核方法 (Kernel Trick)
-將非線性可分的資料映射到高維空間中，使其變得線性可分。
-
+完全自包含版本：所有程式碼內聯，不依賴外部 src/ 模組。
 執行: streamlit run streamlit_app.py
-依賴: streamlit, numpy, scikit-learn
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
+import numpy as np
+import json
 
-from src.data_gen import generate_datasets
-from src.utils import to_json_compact
+# ============================================================
+# 內聯資料生成（不依賴 src/）
+# ============================================================
+
+def _generate_datasets(n_per_class=80):
+    rng = np.random.RandomState(42)
+
+    class_a_lin = rng.randn(n_per_class, 2) * 1.2 + np.array([-3, -3])
+    class_b_lin = rng.randn(n_per_class, 2) * 1.2 + np.array([3, 3])
+    X_linear = np.vstack([class_a_lin, class_b_lin])
+    y_linear = np.hstack([np.zeros(n_per_class), np.ones(n_per_class)])
+
+    class_a_nonlin = rng.randn(n_per_class, 2) * 1.0
+    angles = rng.uniform(0, 2*np.pi, n_per_class)
+    radii = rng.uniform(3.5, 5.0, n_per_class)
+    class_b_nonlin = np.column_stack([radii*np.cos(angles), radii*np.sin(angles)])
+
+    try:
+        from sklearn.svm import SVC
+        svm = SVC(kernel="linear", C=1e10, random_state=42)
+        svm.fit(X_linear, y_linear)
+        w = svm.coef_[0].astype(np.float64)
+        b = float(svm.intercept_[0])
+        sv_indices = [int(i) for i in svm.support_]
+    except ImportError:
+        ca = class_a_lin.mean(axis=0); cb = class_b_lin.mean(axis=0)
+        w = cb - ca; w = w / np.linalg.norm(w)
+        b = float(-np.dot(w, (ca+cb)/2))
+        da = np.abs(np.dot(class_a_lin, w)+b); db = np.abs(np.dot(class_b_lin, w)+b)
+        sv_indices = (
+            [int(i) for i in np.where(da <= np.percentile(da,20))[0]] +
+            [int(n_per_class+i) for i in np.where(db <= np.percentile(db,20))[0]]
+        )
+
+    w_norm = w / np.linalg.norm(w)
+    perp = np.array([-w_norm[1], w_norm[0]], dtype=np.float64)
+    ext = 7.0; pc = -b*w_norm
+    p1 = pc + perp*ext; p2 = pc - perp*ext
+    p1p = p1 + w_norm; p2p = p2 + w_norm
+    p1n = p1 - w_norm; p2n = p2 - w_norm
+
+    def _kz(pts): return np.exp(-np.sum(pts**2, axis=1))
+    zlr = _kz(class_a_lin); zlb = _kz(class_b_lin)
+    znr = _kz(class_a_nonlin); znb = _kz(class_b_nonlin)
+    sep_z = float(0.5*(np.mean(znr)+np.mean(znb)))
+
+    return {
+        "n": n_per_class,
+        "linear_red": class_a_lin.tolist(), "linear_blue": class_b_lin.tolist(),
+        "nonlinear_red": class_a_nonlin.tolist(), "nonlinear_blue": class_b_nonlin.tolist(),
+        "z_linear_red": zlr.tolist(), "z_linear_blue": zlb.tolist(),
+        "z_nonlinear_red": znr.tolist(), "z_nonlinear_blue": znb.tolist(),
+        "w": w.tolist(), "b": b, "sv_indices": sv_indices,
+        "db_line": [p1.tolist(), p2.tolist()],
+        "margin_pos": [p1p.tolist(), p2p.tolist()],
+        "margin_neg": [p1n.tolist(), p2n.tolist()],
+        "hyperplane_z": sep_z,
+    }
 
 
 # ============================================================
-# THREE.JS 嵌入式應用 (HTML/JS)
+# THREE.JS HTML (完全自包含)
 # ============================================================
 
-def build_html(data_json: str) -> str:
-    return f"""<!DOCTYPE html>
+THREEJS_HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SVM 核方法 3D 視覺化</title>
 <style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    body {{
-        background: #000;
-        overflow: hidden;
-        font-family: 'Microsoft YaHei', 'PingFang TC', 'Noto Sans TC', sans-serif;
-        user-select: none;
-    }}
-    canvas {{ display: block; }}
-
-    #loading {{
-        position: absolute; top: 50%; left: 50%;
-        transform: translate(-50%,-50%);
-        color: #0ff; font-size: 20px; z-index: 100;
-        text-align: center;
-    }}
-    #loading .spinner {{
-        width: 48px; height: 48px;
-        border: 3px solid rgba(0,255,255,0.2);
-        border-top-color: #0ff;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-        margin: 0 auto 16px auto;
-    }}
-    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-
-    #error-msg {{
-        position: absolute; top: 50%; left: 50%;
-        transform: translate(-50%,-50%);
-        color: #f44; font-size: 16px; z-index: 100;
-        text-align: center; display: none;
-        background: rgba(0,0,0,0.8); padding: 20px 30px;
-        border-radius: 10px; border: 1px solid #f44;
-    }}
-
-    #ui-overlay {{
-        position: absolute; top: 24px; left: 24px;
-        background: rgba(0,0,0,0.75);
-        border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 12px; padding: 24px 28px;
-        color: #fff; max-width: 420px;
-        backdrop-filter: blur(8px); pointer-events: none;
-        display: none;
-    }}
-    #state-name {{
-        font-size: 28px; font-weight: bold; margin-bottom: 6px; letter-spacing: 2px;
-    }}
-    #formula {{
-        font-size: 15px; color: #ffcc00; margin-bottom: 14px;
-        word-break: break-all; line-height: 1.4;
-    }}
-    #explanation {{
-        font-size: 14px; color: #bbb; line-height: 1.7;
-    }}
-    #explanation span.hl {{ color: #0f0; }}
-    #explanation span.wn {{ color: #ff0; }}
-
-    #btn-bar {{
-        position: absolute; bottom: 32px; left: 50%;
-        transform: translateX(-50%);
-        display: flex; gap: 16px; z-index: 20;
-        display: none;
-    }}
-    #btn-bar button {{
-        padding: 14px 28px; font-size: 15px; font-weight: bold;
-        letter-spacing: 1px; cursor: pointer;
-        border: 2px solid rgba(0,255,255,0.6);
-        background: rgba(0,20,40,0.85); color: #0ff;
-        border-radius: 10px;
-        font-family: 'Microsoft YaHei', 'PingFang TC', 'Noto Sans TC', sans-serif;
-        transition: all 0.25s; backdrop-filter: blur(6px);
-        white-space: nowrap;
-    }}
-    #btn-bar button:hover {{
-        background: rgba(0,255,255,0.18); border-color: #0ff;
-        box-shadow: 0 0 24px rgba(0,255,255,0.45);
-    }}
-    #btn-bar button.active {{
-        background: rgba(0,255,255,0.25); border-color: #fff; color: #fff;
-    }}
-
-    #note-banner {{
-        position: absolute; bottom: 110px; left: 50%;
-        transform: translateX(-50%);
-        color: #888; font-size: 13px;
-        font-family: 'Microsoft YaHei', 'PingFang TC', 'Noto Sans TC', sans-serif;
-        text-align: center; display: none;
-        background: rgba(0,0,0,0.6); padding: 8px 20px;
-        border-radius: 6px; white-space: nowrap;
-    }}
-
-    #fps-counter {{
-        position: absolute; top: 12px; right: 16px;
-        color: #444; font-size: 11px;
-        font-family: monospace; z-index: 10;
-        display: none;
-    }}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#000;overflow:hidden;font-family:'Microsoft YaHei','PingFang TC',sans-serif;user-select:none}
+    canvas{display:block}
+    #status{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:18px;z-index:100;text-align:center}
+    #status .dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin:0 4px;animation:bounce 1.4s infinite}
+    #status .dot:nth-child(2){animation-delay:0.2s}
+    #status .dot:nth-child(3){animation-delay:0.4s}
+    @keyframes bounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+    .dot-g{background:#0f0}.dot-r{background:#f00}.dot-y{background:#ff0}
+    #err{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#f44;font-size:16px;z-index:100;text-align:center;display:none;background:rgba(0,0,0,0.85);padding:20px 30px;border-radius:10px;border:1px solid #f44;max-width:500px;line-height:1.6}
+    #ui-overlay{position:absolute;top:24px;left:24px;background:rgba(0,0,0,0.75);border:1px solid rgba(255,255,255,0.15);border-radius:12px;padding:22px 26px;color:#fff;max-width:420px;backdrop-filter:blur(8px);pointer-events:none;display:none}
+    #state-name{font-size:28px;font-weight:bold;margin-bottom:6px;letter-spacing:2px}
+    #formula{font-size:15px;color:#fc0;margin-bottom:12px;word-break:break-all;line-height:1.4}
+    #explanation{font-size:14px;color:#bbb;line-height:1.7}
+    #explanation .hl{color:#0f0}#explanation .wn{color:#ff0}
+    #btn-bar{position:absolute;bottom:32px;left:50%;transform:translateX(-50%);display:none;gap:14px;z-index:20}
+    #btn-bar button{padding:14px 26px;font-size:15px;font-weight:bold;letter-spacing:1px;cursor:pointer;border:2px solid rgba(0,255,255,0.6);background:rgba(0,20,40,0.85);color:#0ff;border-radius:10px;font-family:inherit;transition:all 0.25s;backdrop-filter:blur(6px);white-space:nowrap}
+    #btn-bar button:hover{background:rgba(0,255,255,0.18);border-color:#0ff;box-shadow:0 0 24px rgba(0,255,255,0.45)}
+    #btn-bar button.active{background:rgba(0,255,255,0.25);border-color:#fff;color:#fff}
+    #note-banner{position:absolute;bottom:110px;left:50%;transform:translateX(-50%);color:#888;font-size:13px;font-family:inherit;text-align:center;display:none;background:rgba(0,0,0,0.6);padding:8px 20px;border-radius:6px;white-space:nowrap}
+    #fps-counter{position:absolute;top:12px;right:16px;color:#444;font-size:11px;font-family:monospace;z-index:10;display:none}
 </style>
 </head>
 <body>
 
-<div id="loading">
-    <div class="spinner"></div>
-    <div>正在載入 3D 場景...</div>
+<div id="status">
+    <div style="margin-bottom:12px">載入中</div>
+    <span class="dot dot-g"></span><span class="dot dot-y"></span><span class="dot dot-r"></span>
+    <div id="status-msg" style="font-size:13px;color:#888;margin-top:12px">正在初始化...</div>
 </div>
-<div id="error-msg"></div>
+<div id="err"></div>
 
 <div id="ui-overlay">
-    <div id="state-name">線性 SVM</div>
-    <div id="formula">f(x) = wᵀx + b</div>
-    <div id="explanation">
-        資料是 <span class="hl">完美線性可分</span> 的。<br>
-        SVM 找到 <span class="hl">最佳超平面</span>，<br>
-        最大化兩個類別之間的邊界距離。<br><br>
-        <span style="color:#0f0">▬</span> 決策邊界：wᵀx + b = 0<br>
-        <span class="wn">▬</span> 邊界線：wᵀx + b = ±1<br>
-        <span class="wn">◯</span> 支持向量（最近的點）
-    </div>
+    <div id="state-name"></div>
+    <div id="formula"></div>
+    <div id="explanation"></div>
 </div>
 
 <div id="btn-bar">
@@ -151,688 +124,370 @@ def build_html(data_json: str) -> str:
     <button id="btn-nonlinear">非線性資料</button>
     <button id="btn-kernel">核方法 3D</button>
 </div>
-
-<div id="note-banner">
-    ⚠ 此為特徵空間提升的直觀示意，並非真實的無限維 RBF 特徵空間
-</div>
-
+<div id="note-banner">⚠ 此為特徵空間提升的直觀示意，並非真實的無限維 RBF 特徵空間</div>
 <div id="fps-counter">FPS: --</div>
 
-<!-- Three.js r152.2 from jsdelivr (global, no importmap needed) -->
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js">
+<!-- Three.js + OrbitControls from jsdelivr CDN (global script, no importmap) -->
+<script>
+var __three_loaded = false;
+var __orbit_loaded = false;
 </script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js">
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"
+    onload="__three_loaded=true;document.getElementById('status-msg').textContent='Three.js 已載入'"
+    onerror="document.getElementById('err').style.display='block';document.getElementById('err').innerHTML='<b>Three.js 載入失敗</b><br>CDN 連線異常，請檢查網路或稍後再試'">
+</script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/controls/OrbitControls.js"
+    onload="__orbit_loaded=true;document.getElementById('status-msg').textContent='OrbitControls 已載入'"
+    onerror="document.getElementById('status-msg').textContent='OrbitControls 載入失敗（將使用基本視角）'">
 </script>
 
 <script>
-(function() {{
+(function(){
 'use strict';
-
-// ============================================================
-// 顯示錯誤的輔助函式
-// ============================================================
-function showError(msg) {{
-    var el = document.getElementById('error-msg');
-    el.style.display = 'block';
-    el.textContent = '⚠ 載入失敗：' + msg;
-    document.getElementById('loading').style.display = 'none';
-}}
-
-function hideLoading() {{
-    document.getElementById('loading').style.display = 'none';
-}}
-
-function showUI() {{
-    document.getElementById('ui-overlay').style.display = 'block';
-    document.getElementById('btn-bar').style.display = 'flex';
-    document.getElementById('fps-counter').style.display = 'block';
-}}
-
-// ============================================================
-// 檢查 Three.js 是否載入成功
-// ============================================================
-if (typeof THREE === 'undefined') {{
-    showError('無法載入 Three.js 函式庫，請檢查網路連線');
-    throw new Error('THREE not loaded');
-}}
-
-// ============================================================
-// 注入資料
-// ============================================================
-var DATA = {data_json};
+var DATA = __DATA__;
 var N = DATA.n;
 
-// ============================================================
-// 全域狀態
-// ============================================================
-var STATE = {{ LINEAR: 0, NONLINEAR: 1, KERNEL_3D: 2 }};
-var currentState = STATE.LINEAR;
-var targetState = STATE.LINEAR;
-var transitionProgress = 0.0;
-var transitionStartMs = 0;
-var T_DURATION = 2800;
+// 等待所有腳本載入
+function waitForScripts(cb) {
+    var attempts = 0;
+    var maxAttempts = 100;
+    function check() {
+        attempts++;
+        if (typeof THREE !== 'undefined') {
+            cb(true);
+        } else if (attempts >= maxAttempts) {
+            cb(false);
+        } else {
+            setTimeout(check, 100);
+        }
+    }
+    check();
+}
 
-function easeInOutCubic(t) {{
-    return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2;
-}}
-function lerp(a, b, t) {{ return a + (b - a) * t; }}
-function smoothstep(e0, e1, x) {{
-    var t2 = Math.max(0, Math.min((x - e0)/(e1 - e0), 1));
-    return t2 * t2 * (3 - 2*t2);
-}}
+waitForScripts(function(ok) {
+    if (!ok) {
+        document.getElementById('status').style.display = 'none';
+        var errEl = document.getElementById('err');
+        errEl.style.display = 'block';
+        errEl.innerHTML = '<b>Three.js 載入逾時</b><br><br>可能原因：<br>1. CDN 連線異常<br>2. 瀏覽器封鎖外部腳本<br>3. 網路防火牆限制<br><br>請嘗試重新整理頁面或更換網路環境';
+        return;
+    }
+    startApp();
+});
 
-// ============================================================
-// 粒子資料結構
-// ============================================================
-var redParticles = [];
-var blueParticles = [];
-
-for (var i = 0; i < N; i++) {{
-    var lr = DATA.linear_red[i];
-    var nr = DATA.nonlinear_red[i];
-    redParticles.push({{
-        linearPos:    new THREE.Vector3(lr[0], lr[1], 0),
-        nonlinearPos: new THREE.Vector3(nr[0], nr[1], 0),
-        kernelZNonlin: DATA.z_nonlinear_red[i],
-        currentPos:   new THREE.Vector3(lr[0], lr[1], 0),
-        isSV:         DATA.sv_indices.indexOf(i) !== -1,
-    }});
-}}
-for (var i = 0; i < N; i++) {{
-    var lb = DATA.linear_blue[i];
-    var nb = DATA.nonlinear_blue[i];
-    blueParticles.push({{
-        linearPos:    new THREE.Vector3(lb[0], lb[1], 0),
-        nonlinearPos: new THREE.Vector3(nb[0], nb[1], 0),
-        kernelZNonlin: DATA.z_nonlinear_blue[i],
-        currentPos:   new THREE.Vector3(lb[0], lb[1], 0),
-        isSV:         DATA.sv_indices.indexOf(N + i) !== -1,
-    }});
-}}
+function startApp() {
+try {
 
 // ============================================================
-// THREE.JS 場景初始化
+// 狀態機
 // ============================================================
-var W = window.innerWidth;
-var H = window.innerHeight;
-var scene = new THREE.Scene();
+var STATE = { LINEAR:0, NONLINEAR:1, KERNEL_3D:2 };
+var cs = STATE.LINEAR, ts = STATE.LINEAR;
+var tp = 0, tsm = 0;
+var TD = 2800;
 
-var camera = new THREE.PerspectiveCamera(50, W/H, 0.1, 100);
-camera.position.set(0, 0, 14);
-camera.lookAt(0, 0, 0);
-
-var renderer;
-try {{
-    renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: false }});
-    renderer.setSize(W, H);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor(0x050510);
-    document.body.appendChild(renderer.domElement);
-}} catch(e) {{
-    showError('WebGL 不受支援，請使用較新的瀏覽器');
-    throw e;
-}}
-
-// OrbitControls (預設關閉)
-var controls;
-try {{
-    controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.enabled = false;
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.minDistance = 4;
-    controls.maxDistance = 30;
-    controls.maxPolarAngle = Math.PI * 0.75;
-}} catch(e) {{
-    showError('OrbitControls 載入失敗');
-    throw e;
-}}
+function ease(t){return t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2}
+function lerp(a,b,t){return a+(b-a)*t}
+function smooth(e0,e1,x){var t2=Math.max(0,Math.min((x-e0)/(e1-e0),1));return t2*t2*(3-2*t2)}
 
 // ============================================================
+// 粒子
+// ============================================================
+var RP=[], BP=[];
+for(var i=0;i<N;i++){
+    var lr=DATA.linear_red[i], nr=DATA.nonlinear_red[i];
+    RP.push({lp:new THREE.Vector3(lr[0],lr[1],0),np:new THREE.Vector3(nr[0],nr[1],0),kz:DATA.z_nonlinear_red[i],cp:new THREE.Vector3(lr[0],lr[1],0),sv:DATA.sv_indices.indexOf(i)!==-1});
+}
+for(var i=0;i<N;i++){
+    var lb=DATA.linear_blue[i], nb=DATA.nonlinear_blue[i];
+    BP.push({lp:new THREE.Vector3(lb[0],lb[1],0),np:new THREE.Vector3(nb[0],nb[1],0),kz:DATA.z_nonlinear_blue[i],cp:new THREE.Vector3(lb[0],lb[1],0),sv:DATA.sv_indices.indexOf(N+i)!==-1});
+}
+
+// ============================================================
+// 場景
+// ============================================================
+var W=window.innerWidth, H=window.innerHeight;
+var scene=new THREE.Scene();
+var camera=new THREE.PerspectiveCamera(50,W/H,0.1,100);
+camera.position.set(0,0,14);camera.lookAt(0,0,0);
+var renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setClearColor(0x050510);
+document.body.appendChild(renderer.domElement);
+
+var controls=null;
+if(typeof THREE.OrbitControls!=='undefined'){
+    controls=new THREE.OrbitControls(camera,renderer.domElement);
+    controls.enabled=false;controls.enableDamping=true;controls.dampingFactor=0.08;
+    controls.minDistance=4;controls.maxDistance=30;controls.maxPolarAngle=Math.PI*0.75;
+}
+
 // 燈光
-// ============================================================
-scene.add(new THREE.AmbientLight(0x222244, 0.4));
-var dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
-dirLight.position.set(0, 8, 12);
-scene.add(dirLight);
+scene.add(new THREE.AmbientLight(0x222244,0.4));
+var dl=new THREE.DirectionalLight(0xffffff,0.6);dl.position.set(0,8,12);scene.add(dl);
 
-// ============================================================
-// 圖層 1 — 背景星空
-// ============================================================
-var starsGeom = new THREE.BufferGeometry();
-var starCount = 1800;
-var starArr = new Float32Array(starCount * 3);
-for (var si = 0; si < starCount * 3; si += 3) {{
-    starArr[si]     = (Math.random() - 0.5) * 45;
-    starArr[si + 1] = (Math.random() - 0.5) * 45;
-    starArr[si + 2] = (Math.random() - 0.5) * 22 - 11;
-}}
-starsGeom.setAttribute('position', new THREE.BufferAttribute(starArr, 3));
-var starsMesh = new THREE.Points(starsGeom, new THREE.PointsMaterial({{
-    color: 0xccccff, size: 0.035, transparent: true, opacity: 0.75,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-}}));
-scene.add(starsMesh);
+// ----- 星空 -----
+var sg=new THREE.BufferGeometry();
+var sc=1800, sa=new Float32Array(sc*3);
+for(var i=0;i<sc*3;i+=3){sa[i]=(Math.random()-0.5)*45;sa[i+1]=(Math.random()-0.5)*45;sa[i+2]=(Math.random()-0.5)*22-11}
+sg.setAttribute('position',new THREE.BufferAttribute(sa,3));
+var sm=new THREE.Points(sg,new THREE.PointsMaterial({color:0xccccff,size:0.035,transparent:true,opacity:0.75,blending:THREE.AdditiveBlending,depthWrite:false}));
+scene.add(sm);
 
 // 星雲
-var nebulaGeom = new THREE.BufferGeometry();
-var nebCount = 400;
-var nebPos = new Float32Array(nebCount * 3);
-var nebCol = new Float32Array(nebCount * 3);
-for (var ni = 0; ni < nebCount * 3; ni += 3) {{
-    nebPos[ni]     = (Math.random() - 0.5) * 24;
-    nebPos[ni + 1] = (Math.random() - 0.5) * 24;
-    nebPos[ni + 2] = (Math.random() - 0.5) * 12 - 6;
-    nebCol[ni]     = 0.08 + Math.random() * 0.12;
-    nebCol[ni + 1] = 0.02 + Math.random() * 0.06;
-    nebCol[ni + 2] = 0.15 + Math.random() * 0.25;
-}}
-nebulaGeom.setAttribute('position', new THREE.BufferAttribute(nebPos, 3));
-nebulaGeom.setAttribute('color', new THREE.BufferAttribute(nebCol, 3));
-scene.add(new THREE.Points(nebulaGeom, new THREE.PointsMaterial({{
-    size: 0.55, vertexColors: true, transparent: true, opacity: 0.25,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-}})));
+var ng=new THREE.BufferGeometry(), nc2=400, np2=new Float32Array(nc2*3), ncl=new Float32Array(nc2*3);
+for(var i=0;i<nc2*3;i+=3){np2[i]=(Math.random()-0.5)*24;np2[i+1]=(Math.random()-0.5)*24;np2[i+2]=(Math.random()-0.5)*12-6;ncl[i]=0.08+Math.random()*0.12;ncl[i+1]=0.02+Math.random()*0.06;ncl[i+2]=0.15+Math.random()*0.25}
+ng.setAttribute('position',new THREE.BufferAttribute(np2,3));ng.setAttribute('color',new THREE.BufferAttribute(ncl,3));
+scene.add(new THREE.Points(ng,new THREE.PointsMaterial({size:0.55,vertexColors:true,transparent:true,opacity:0.25,blending:THREE.AdditiveBlending,depthWrite:false})));
 
-// ============================================================
-// 圖層 2 — 資料粒子
-// ============================================================
-var redGeom = new THREE.BufferGeometry();
-var redPosArr = new Float32Array(N * 3);
-redGeom.setAttribute('position', new THREE.BufferAttribute(redPosArr, 3));
-var redPoints = new THREE.Points(redGeom, new THREE.PointsMaterial({{
-    color: 0xff2233, size: 0.20, blending: THREE.AdditiveBlending,
-    depthWrite: false, transparent: true,
-}}));
-scene.add(redPoints);
+// ----- 資料粒子 -----
+var rg=new THREE.BufferGeometry(), ra=new Float32Array(N*3);
+rg.setAttribute('position',new THREE.BufferAttribute(ra,3));
+var rp2=new THREE.Points(rg,new THREE.PointsMaterial({color:0xff2233,size:0.20,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
+scene.add(rp2);
 
-var blueGeom = new THREE.BufferGeometry();
-var bluePosArr = new Float32Array(N * 3);
-blueGeom.setAttribute('position', new THREE.BufferAttribute(bluePosArr, 3));
-var bluePoints = new THREE.Points(blueGeom, new THREE.PointsMaterial({{
-    color: 0x2266ff, size: 0.20, blending: THREE.AdditiveBlending,
-    depthWrite: false, transparent: true,
-}}));
-scene.add(bluePoints);
+var bg=new THREE.BufferGeometry(), ba=new Float32Array(N*3);
+bg.setAttribute('position',new THREE.BufferAttribute(ba,3));
+var bp2=new THREE.Points(bg,new THREE.PointsMaterial({color:0x2266ff,size:0.20,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
+scene.add(bp2);
 
-// ============================================================
-// 圖層 3 — 決策邊界線
-// ============================================================
-var dbGroup = new THREE.Group();
-scene.add(dbGroup);
-
-function lineMesh(pA, pB, color, width, opacity) {{
-    var dir = new THREE.Vector3().subVectors(pB, pA);
-    var len = dir.length();
-    var mid = new THREE.Vector3().addVectors(pA, pB).multiplyScalar(0.5);
-    var geom = new THREE.CylinderGeometry(width, width, len, 6, 1);
-    var mat = new THREE.MeshBasicMaterial({{
-        color: color, transparent: true, opacity: opacity, depthTest: true,
-    }});
-    var mesh = new THREE.Mesh(geom, mat);
-    mesh.position.copy(mid);
-    var quat = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0), dir.normalize()
-    );
-    mesh.setRotationFromQuaternion(quat);
+// ----- 輔助函式 -----
+function lm(pA,pB,color,width,opacity){
+    var dir=new THREE.Vector3().subVectors(pB,pA), len=dir.length();
+    var mid=new THREE.Vector3().addVectors(pA,pB).multiplyScalar(0.5);
+    var geom=new THREE.CylinderGeometry(width,width,len,6,1);
+    var mat=new THREE.MeshBasicMaterial({color:color,transparent:true,opacity:opacity,depthTest:true});
+    var mesh=new THREE.Mesh(geom,mat);mesh.position.copy(mid);
+    mesh.setRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),dir.normalize()));
     return mesh;
-}}
+}
 
-function buildDecisionBoundary() {{
-    while (dbGroup.children.length > 0) dbGroup.remove(dbGroup.children[0]);
-    var p1  = new THREE.Vector3(DATA.db_line[0][0], DATA.db_line[0][1], 0.02);
-    var p2  = new THREE.Vector3(DATA.db_line[1][0], DATA.db_line[1][1], 0.02);
-    var mp1 = new THREE.Vector3(DATA.margin_pos[0][0], DATA.margin_pos[0][1], 0.01);
-    var mp2 = new THREE.Vector3(DATA.margin_pos[1][0], DATA.margin_pos[1][1], 0.01);
-    var mn1 = new THREE.Vector3(DATA.margin_neg[0][0], DATA.margin_neg[0][1], 0.01);
-    var mn2 = new THREE.Vector3(DATA.margin_neg[1][0], DATA.margin_neg[1][1], 0.01);
-    dbGroup.add(lineMesh(p1, p2,   0x00ff88, 0.08, 1.0));
-    dbGroup.add(lineMesh(mp1, mp2, 0xffcc00, 0.04, 0.9));
-    dbGroup.add(lineMesh(mn1, mn2, 0xffcc00, 0.04, 0.9));
-}}
-buildDecisionBoundary();
+// ----- 決策邊界 -----
+var dbg=new THREE.Group();scene.add(dbg);
+(function(){
+    var p1=new THREE.Vector3(DATA.db_line[0][0],DATA.db_line[0][1],0.02);
+    var p2=new THREE.Vector3(DATA.db_line[1][0],DATA.db_line[1][1],0.02);
+    var mp1=new THREE.Vector3(DATA.margin_pos[0][0],DATA.margin_pos[0][1],0.01);
+    var mp2=new THREE.Vector3(DATA.margin_pos[1][0],DATA.margin_pos[1][1],0.01);
+    var mn1=new THREE.Vector3(DATA.margin_neg[0][0],DATA.margin_neg[0][1],0.01);
+    var mn2=new THREE.Vector3(DATA.margin_neg[1][0],DATA.margin_neg[1][1],0.01);
+    dbg.add(lm(p1,p2,0x00ff88,0.08,1.0));
+    dbg.add(lm(mp1,mp2,0xffcc00,0.04,0.9));
+    dbg.add(lm(mn1,mn2,0xffcc00,0.04,0.9));
+})();
 
-// ============================================================
-// 支持向量指示器
-// ============================================================
-var svGroup = new THREE.Group();
-scene.add(svGroup);
-var svRingGeom = new THREE.TorusGeometry(0.32, 0.05, 8, 20);
+// ----- SV 指標 -----
+var svg=new THREE.Group();scene.add(svg);
+var svrg=new THREE.TorusGeometry(0.32,0.05,8,20);
+function refSV(op){
+    while(svg.children.length>0)svg.remove(svg.children[0]);
+    var all=RP.concat(BP);
+    for(var i=0;i<all.length;i++){
+        if(!all[i].sv)continue;
+        var ring=new THREE.Mesh(svrg,new THREE.MeshBasicMaterial({color:0xffff44,transparent:true,opacity:op,depthTest:true}));
+        ring.position.copy(all[i].cp);ring.position.z+=0.03;svg.add(ring);
+    }
+}
+refSV(0.85);
 
-function refreshSVIndicators(opacity) {{
-    while (svGroup.children.length > 0) svGroup.remove(svGroup.children[0]);
-    var allParts = redParticles.concat(blueParticles);
-    for (var pj = 0; pj < allParts.length; pj++) {{
-        if (!allParts[pj].isSV) continue;
-        var rm = new THREE.MeshBasicMaterial({{
-            color: 0xffff44, transparent: true, opacity: opacity, depthTest: true,
-        }});
-        var ring = new THREE.Mesh(svRingGeom, rm);
-        ring.position.copy(allParts[pj].currentPos);
-        ring.position.z += 0.03;
-        svGroup.add(ring);
-    }}
-}}
-refreshSVIndicators(0.85);
+// ----- 核網格 -----
+var kgg=new THREE.Group();kgg.visible=false;scene.add(kgg);
+var GR=28, GE=7.5, gn=[];
+var gdg=new THREE.SphereGeometry(0.045,4,4);
+for(var i=0;i<=GR;i++)for(var j=0;j<=GR;j++){
+    var fx=(i/GR-0.5)*2*GE, fy=(j/GR-0.5)*2*GE;
+    var gm2=new THREE.Mesh(gdg,new THREE.MeshBasicMaterial({color:0x8888ff,transparent:true,opacity:0.55,depthTest:true}));
+    gm2.position.set(fx,fy,0);gm2.userData={bx:fx,by:fy};kgg.add(gm2);gn.push(gm2);
+}
 
-// ============================================================
-// 圖層 4 — 核轉換網格
-// ============================================================
-var kernelGridGroup = new THREE.Group();
-kernelGridGroup.visible = false;
-scene.add(kernelGridGroup);
+// ----- 超平面 -----
+var hpg=new THREE.Group();hpg.visible=false;scene.add(hpg);
+var hpM=new THREE.MeshBasicMaterial({color:0x00ffff,side:THREE.DoubleSide,transparent:true,opacity:0.28,depthWrite:false});
+var hp=new THREE.Mesh(new THREE.PlaneGeometry(10,10),hpM);hp.position.z=DATA.hyperplane_z;hpg.add(hp);
+var hrM=new THREE.MeshBasicMaterial({color:0x00ffff,transparent:true,opacity:0.5,depthTest:true});
+var hr=new THREE.Mesh(new THREE.TorusGeometry(4.2,0.06,12,80),hrM);hr.position.z=DATA.hyperplane_z;hpg.add(hr);
 
-var GRID_RES = 28;
-var GRID_EXT = 7.5;
-var gridNodes = [];
-var gridDotGeom = new THREE.SphereGeometry(0.045, 4, 4);
+// ----- 投影 -----
+var pjg=new THREE.Group();pjg.visible=false;scene.add(pjg);
+var pcM=new THREE.MeshBasicMaterial({color:0x00ff88,transparent:true,opacity:0.75,depthTest:true});
+var pc2=new THREE.Mesh(new THREE.TorusGeometry(2.0,0.05,16,80),pcM);pjg.add(pc2);
+var plg=new THREE.Group();pjg.add(plg);
 
-for (var gi = 0; gi <= GRID_RES; gi++) {{
-    for (var gj = 0; gj <= GRID_RES; gj++) {{
-        var fx = (gi/GRID_RES - 0.5) * 2 * GRID_EXT;
-        var fy = (gj/GRID_RES - 0.5) * 2 * GRID_EXT;
-        var gm = new THREE.Mesh(gridDotGeom, new THREE.MeshBasicMaterial({{
-            color: 0x8888ff, transparent: true, opacity: 0.55, depthTest: true,
-        }}));
-        gm.position.set(fx, fy, 0);
-        gm.userData = {{ baseX: fx, baseY: fy }};
-        kernelGridGroup.add(gm);
-        gridNodes.push(gm);
-    }}
-}}
+// 座標軸
+var ag=new THREE.Group();
+ag.add(lm(new THREE.Vector3(-8,0,0),new THREE.Vector3(8,0,0),0x444444,0.02,0.25));
+ag.add(lm(new THREE.Vector3(0,-8,0),new THREE.Vector3(0,8,0),0x444444,0.02,0.25));
+ag.add(lm(new THREE.Vector3(0,0,-3),new THREE.Vector3(0,0,3),0x444444,0.02,0.25));
+scene.add(ag);
 
 // ============================================================
-// 圖層 5 — 超平面
+// 位置更新
 // ============================================================
-var hyperplaneGroup = new THREE.Group();
-hyperplaneGroup.visible = false;
-scene.add(hyperplaneGroup);
+function setPP(mt){
+    var ra2=rg.attributes.position.array, ba2=bg.attributes.position.array;
+    for(var i=0;i<N;i++){
+        var r=RP[i], b=BP[i];
+        var rx=lerp(r.lp.x,r.np.x,mt), ry=lerp(r.lp.y,r.np.y,mt);
+        var bx=lerp(b.lp.x,b.np.x,mt), by=lerp(b.lp.y,b.np.y,mt);
+        r.cp.set(rx,ry,r.cp.z);b.cp.set(bx,by,b.cp.z);
+        var ri=i*3,bi=i*3;
+        ra2[ri]=rx;ra2[ri+1]=ry;ra2[ri+2]=r.cp.z;
+        ba2[bi]=bx;ba2[bi+1]=by;ba2[bi+2]=b.cp.z;
+    }
+    rg.attributes.position.needsUpdate=true;bg.attributes.position.needsUpdate=true;
+}
+function aKL(kt){
+    var ra2=rg.attributes.position.array, ba2=bg.attributes.position.array;
+    for(var i=0;i<N;i++){
+        var rz=lerp(0,RP[i].kz,kt), bz=lerp(0,BP[i].kz,kt);
+        RP[i].cp.z=rz;BP[i].cp.z=bz;
+        ra2[i*3+2]=rz;ba2[i*3+2]=bz;
+    }
+    rg.attributes.position.needsUpdate=true;bg.attributes.position.needsUpdate=true;
+}
+function uGL(kt){for(var i=0;i<gn.length;i++){var n=gn[i],x=n.userData.bx,y=n.userData.by;n.position.z=Math.exp(-(x*x+y*y))*kt;n.material.opacity=0.2+kt*0.35}}
+function uC3(rt){camera.position.set(rt*5.5,rt*5.5,14-rt*5);camera.lookAt(0,0,lerp(0,DATA.hyperplane_z,rt))}
+function uPL(op){
+    while(plg.children.length>0)plg.remove(plg.children[0]);
+    if(op<=0)return;var all=RP.concat(BP);
+    for(var i=0;i<all.length;i+=4){var p=all[i],t=p.cp.clone(),b2=p.cp.clone();b2.z=0;plg.add(lm(t,b2,0x3355ff,0.015,op*0.35))}
+}
 
-var hpGeom = new THREE.PlaneGeometry(10, 10);
-var hpMat = new THREE.MeshBasicMaterial({{
-    color: 0x00ffff, side: THREE.DoubleSide,
-    transparent: true, opacity: 0.28, depthWrite: false,
-}});
-var hpPlane = new THREE.Mesh(hpGeom, hpMat);
-hpPlane.position.z = DATA.hyperplane_z;
-hyperplaneGroup.add(hpPlane);
-
-var hpRingGeom = new THREE.TorusGeometry(4.2, 0.06, 12, 80);
-var hpRingMat = new THREE.MeshBasicMaterial({{
-    color: 0x00ffff, transparent: true, opacity: 0.5, depthTest: true,
-}});
-var hpRingMesh = new THREE.Mesh(hpRingGeom, hpRingMat);
-hpRingMesh.position.z = DATA.hyperplane_z;
-hyperplaneGroup.add(hpRingMesh);
-
-// ============================================================
-// 圖層 6 — 投影層
-// ============================================================
-var projectionGroup = new THREE.Group();
-projectionGroup.visible = false;
-scene.add(projectionGroup);
-
-var projCircleGeom = new THREE.TorusGeometry(2.0, 0.05, 16, 80);
-var projCircleMat = new THREE.MeshBasicMaterial({{
-    color: 0x00ff88, transparent: true, opacity: 0.75, depthTest: true,
-}});
-var projCircle = new THREE.Mesh(projCircleGeom, projCircleMat);
-projectionGroup.add(projCircle);
-
-var projLinesGroup = new THREE.Group();
-projectionGroup.add(projLinesGroup);
+function sDBO(o){for(var i=0;i<dbg.children.length;i++){if(dbg.children[i].material)dbg.children[i].material.opacity=o*0.9}}
 
 // ============================================================
-// 座標軸 (淡色)
+// UI
 // ============================================================
-var axisLen = 8;
-var axisGroup = new THREE.Group();
-function thinLine(s, e, c) {{ return lineMesh(s, e, c, 0.02, 0.25); }}
-axisGroup.add(thinLine(new THREE.Vector3(-axisLen,0,0), new THREE.Vector3(axisLen,0,0), 0x444444));
-axisGroup.add(thinLine(new THREE.Vector3(0,-axisLen,0), new THREE.Vector3(0,axisLen,0), 0x444444));
-axisGroup.add(thinLine(new THREE.Vector3(0,0,-3), new THREE.Vector3(0,0,3), 0x444444));
-scene.add(axisGroup);
-
-// ============================================================
-// 位置更新函式
-// ============================================================
-
-function setParticlePositions(morphT) {{
-    var rArr = redGeom.attributes.position.array;
-    var bArr = blueGeom.attributes.position.array;
-    for (var pi = 0; pi < N; pi++) {{
-        var r = redParticles[pi];
-        var b = blueParticles[pi];
-        var rx = lerp(r.linearPos.x, r.nonlinearPos.x, morphT);
-        var ry = lerp(r.linearPos.y, r.nonlinearPos.y, morphT);
-        var bx = lerp(b.linearPos.x, b.nonlinearPos.x, morphT);
-        var by = lerp(b.linearPos.y, b.nonlinearPos.y, morphT);
-        r.currentPos.set(rx, ry, r.currentPos.z);
-        b.currentPos.set(bx, by, b.currentPos.z);
-        var ri = pi * 3, bi = pi * 3;
-        rArr[ri] = rx; rArr[ri+1] = ry; rArr[ri+2] = r.currentPos.z;
-        bArr[bi] = bx; bArr[bi+1] = by; bArr[bi+2] = b.currentPos.z;
-    }}
-    redGeom.attributes.position.needsUpdate = true;
-    blueGeom.attributes.position.needsUpdate = true;
-}}
-
-function applyKernelLift(kernelT) {{
-    var rArr = redGeom.attributes.position.array;
-    var bArr = blueGeom.attributes.position.array;
-    for (var ki = 0; ki < N; ki++) {{
-        var rz = lerp(0, redParticles[ki].kernelZNonlin, kernelT);
-        var bz = lerp(0, blueParticles[ki].kernelZNonlin, kernelT);
-        redParticles[ki].currentPos.z = rz;
-        blueParticles[ki].currentPos.z = bz;
-        rArr[ki*3+2] = rz;
-        bArr[ki*3+2] = bz;
-    }}
-    redGeom.attributes.position.needsUpdate = true;
-    blueGeom.attributes.position.needsUpdate = true;
-}}
-
-function updateGridLift(kernelT) {{
-    for (var ui = 0; ui < gridNodes.length; ui++) {{
-        var node = gridNodes[ui];
-        var x = node.userData.baseX, y = node.userData.baseY;
-        node.position.z = Math.exp(-(x*x + y*y)) * kernelT;
-        node.material.opacity = 0.2 + kernelT * 0.35;
-    }}
-}}
-
-function updateCamera3D(rotT) {{
-    camera.position.set(rotT*5.5, rotT*5.5, 14 - rotT*5);
-    camera.lookAt(0, 0, lerp(0, DATA.hyperplane_z, rotT));
-}}
-
-function updateProjectionLines(opacity) {{
-    while (projLinesGroup.children.length > 0) projLinesGroup.remove(projLinesGroup[0]);
-    if (opacity <= 0) return;
-    var allParts = redParticles.concat(blueParticles);
-    for (var li = 0; li < allParts.length; li += 4) {{
-        var p = allParts[li];
-        var top = p.currentPos.clone();
-        var bot = p.currentPos.clone(); bot.z = 0;
-        projLinesGroup.add(lineMesh(top, bot, 0x3355ff, 0.015, opacity*0.35));
-    }}
-}}
+var SU=[
+    {nm:'線性 SVM',cl:'#0ff',fm:'f(x) = w<sup>T</sup>x + b',hx:'資料是 <span class="hl">完美線性可分</span> 的。<br>SVM 找到 <span class="hl">最佳超平面</span>，<br>最大化兩個類別之間的邊界距離。<br><br><span style="color:#0f0">▬</span> 決策邊界：w<sup>T</sup>x + b = 0<br><span class="wn">▬</span> 邊界線：w<sup>T</sup>x + b = ±1<br><span class="wn">◯</span> 支持向量（最近的點）'},
+    {nm:'非線性資料',cl:'#f0f',fm:'在 ℝ² 空間中不存在線性分隔器',hx:'資料 <span class="wn">無法</span> 用一條直線分開。<br>紅色集中在中心，藍色在外圍環繞。<br>沒有任何直線可以將它們分離。<br><br><span class="wn">？</span> SVM 該如何處理？<br><span style="color:#888;">→</span> <b>核方法</b> 將資料映射到<br>更高維度的空間，使其<br><span class="hl">變得線性可分</span>！'},
+    {nm:'核方法 3D',cl:'#ff0',fm:'Φ(x₁,x₂) = (x₁, x₂, e<sup>−(x₁²+x₂²)</sup>)',hx:'資料經由核函數 <span class="hl">提升到 3D</span>！<br>K(x,y) = exp(−γ||x−y||²)<br><br><span style="color:#0ff">▭</span> 3D 空間中的分離超平面<br><span style="color:#0f0">○</span> 投影回 2D 的圓形邊界<br><br><span class="hl">在高維空間中，資料<br>變得線性可分！</span>'}
+];
+function uUI(){
+    var u=SU[cs];
+    document.getElementById('state-name').textContent=u.nm;
+    document.getElementById('state-name').style.color=u.cl;
+    document.getElementById('formula').innerHTML=u.fm;
+    document.getElementById('explanation').innerHTML=u.hx;
+    document.getElementById('note-banner').style.display=cs===STATE.KERNEL_3D?'block':'none';
+    ['btn-linear','btn-nonlinear','btn-kernel'].forEach(function(id){document.getElementById(id).classList.remove('active')});
+    document.getElementById(['btn-linear','btn-nonlinear','btn-kernel'][cs]).classList.add('active');
+}
+function uCS(){
+    if(cs===STATE.KERNEL_3D){uC3(1);if(controls)controls.enabled=true}
+    else{camera.position.set(0,0,14);camera.lookAt(0,0,0);if(controls){controls.enabled=false;controls.target.set(0,0,0);controls.update()}}
+}
 
 // ============================================================
-// 可見性輔助
+// 轉換
 // ============================================================
+function rT(to){
+    if(ts===to&&tp<1&&tp>0)return;if(cs===to)return;
+    ts=to;tp=0;tsm=performance.now();
+}
+function tT(now){
+    if(ts===cs)return;
+    var el=now-tsm;tp=Math.min(el/TD,1.0);var t=ease(tp),f=cs;
 
-function setDBOpacity(o) {{
-    for (var di = 0; di < dbGroup.children.length; di++) {{
-        var c = dbGroup.children[di];
-        if (c.material) c.material.opacity = o * 0.9;
-    }}
-}}
+    if(f===STATE.LINEAR&&ts===STATE.NONLINEAR){setPP(t);sDBO(1-t);refSV(0.85*(1-t))}
 
-function setLayerVisibility(group, visible) {{
-    group.visible = visible;
-}}
+    if(f===STATE.NONLINEAR&&ts===STATE.KERNEL_3D){
+        var lT=smooth(0.0,0.35,t);aKL(lT);
+        var sT=smooth(0.2,1.0,t);
+        kgg.visible=sT>0.05;uGL(Math.min(sT*1.4,1.0));
+        hpg.visible=sT>0.25;hpM.opacity=0.28*smooth(0.25,0.5,t);hrM.opacity=0.5*smooth(0.25,0.5,t);
+        pjg.visible=sT>0.35;pcM.opacity=0.75*smooth(0.35,0.6,t);uPL(smooth(0.35,0.7,t));
+        uC3(sT);if(controls)controls.enabled=sT>0.5;
+        document.getElementById('note-banner').style.display=sT>0.4?'block':'none';
+    }
 
-// ============================================================
-// UI 更新 (全中文)
-// ============================================================
+    if(f===STATE.LINEAR&&ts===STATE.KERNEL_3D){
+        var pe=0.35,ps=0.25;
+        if(t<=pe){var pt=Math.min(t/pe,1.0);setPP(pt);sDBO(1-pt);refSV(0.85*(1-pt))}
+        else{setPP(1);sDBO(0);refSV(0)}
+        var lT2=smooth(ps,0.65,t);aKL(lT2);kgg.visible=lT2>0.05;uGL(Math.min(lT2*1.4,1.0));
+        var sT2=smooth(ps+0.05,1.0,t);
+        hpg.visible=sT2>0.2;hpM.opacity=0.28*smooth(0.2,0.45,sT2);hrM.opacity=0.5*smooth(0.2,0.45,sT2);
+        pjg.visible=sT2>0.3;pcM.opacity=0.75*smooth(0.3,0.55,sT2);uPL(smooth(0.3,0.65,sT2));
+        uC3(sT2);if(controls)controls.enabled=sT2>0.45;
+        document.getElementById('note-banner').style.display=sT2>0.35?'block':'none';
+    }
 
-var STATE_UI = {{
-    0: {{
-        name: '線性 SVM',
-        color: '#0ff',
-        formula: 'f(x) = w<sup>T</sup>x + b',
-        html: '資料是 <span class="hl">完美線性可分</span> 的。<br>' +
-              'SVM 找到 <span class="hl">最佳超平面</span>，<br>' +
-              '最大化兩個類別之間的邊界距離。<br><br>' +
-              '<span style="color:#0f0">▬</span> 決策邊界：w<sup>T</sup>x + b = 0<br>' +
-              '<span class="wn">▬</span> 邊界線：w<sup>T</sup>x + b = ±1<br>' +
-              '<span class="wn">◯</span> 支持向量（最近的點）',
-    }},
-    1: {{
-        name: '非線性資料',
-        color: '#f0f',
-        formula: '在 ℝ² 空間中不存在線性分隔器',
-        html: '資料 <span class="wn">無法</span> 用一條直線分開。<br>' +
-              '紅色集中在中心，藍色在外圍環繞。<br>' +
-              '沒有任何直線可以將它們分離。<br><br>' +
-              '<span class="wn">？</span> SVM 該如何處理？<br>' +
-              '<span style="color:#888;">→</span> <b>核方法</b> 將資料映射到<br>' +
-              '更高維度的空間，使其<br>' +
-              '<span class="hl">變得線性可分</span>！',
-    }},
-    2: {{
-        name: '核方法 3D',
-        color: '#ff0',
-        formula: 'Φ(x₁,x₂) = (x₁, x₂, e<sup>−(x₁²+x₂²)</sup>)',
-        html: '資料經由核函數 <span class="hl">提升到 3D</span>！<br>' +
-              'K(x,y) = exp(−γ||x−y||²)<br><br>' +
-              '<span style="color:#0ff">▭</span> 3D 空間中的分離超平面<br>' +
-              '<span style="color:#0f0">○</span> 投影回 2D 的圓形邊界<br><br>' +
-              '<span class="hl">在高維空間中，資料<br>變得線性可分！</span>',
-    }},
-}};
+    if(tp>=1.0){cs=ts;tp=0;uCS();uUI()}
+}
 
-function updateUIOverlay() {{
-    var ui = STATE_UI[currentState];
-    document.getElementById('state-name').textContent = ui.name;
-    document.getElementById('state-name').style.color = ui.color;
-    document.getElementById('formula').innerHTML = ui.formula;
-    document.getElementById('explanation').innerHTML = ui.html;
-    document.getElementById('note-banner').style.display = currentState === STATE.KERNEL_3D ? 'block' : 'none';
-
-    ['btn-linear','btn-nonlinear','btn-kernel'].forEach(function(id) {{
-        document.getElementById(id).classList.remove('active');
-    }});
-    var activeMap = ['btn-linear','btn-nonlinear','btn-kernel'];
-    document.getElementById(activeMap[currentState]).classList.add('active');
-}}
-
-function updateCameraForState() {{
-    if (currentState === STATE.KERNEL_3D) {{
-        updateCamera3D(1);
-        controls.enabled = true;
-    }} else {{
-        camera.position.set(0, 0, 14);
-        camera.lookAt(0, 0, 0);
-        controls.enabled = false;
-        controls.target.set(0, 0, 0);
-        controls.update();
-    }}
-}}
+function rL(){
+    cs=STATE.LINEAR;ts=STATE.LINEAR;tp=0;
+    setPP(0);aKL(0);sDBO(1);refSV(0.85);
+    kgg.visible=false;hpg.visible=false;pjg.visible=false;
+    uCS();uPL(0);document.getElementById('note-banner').style.display='none';uUI();
+}
 
 // ============================================================
-// 轉換引擎
+// 按鈕
 // ============================================================
+document.getElementById('btn-linear').addEventListener('click',function(){rL()});
+document.getElementById('btn-nonlinear').addEventListener('click',function(){
+    if(cs===STATE.NONLINEAR)return;
+    if(cs===STATE.KERNEL_3D){rL();setTimeout(function(){rT(STATE.NONLINEAR)},80)}
+    else rT(STATE.NONLINEAR);
+});
+document.getElementById('btn-kernel').addEventListener('click',function(){
+    if(cs===STATE.KERNEL_3D)return;
+    rT(STATE.KERNEL_3D);
+});
 
-function requestTransition(toState) {{
-    if (targetState === toState && transitionProgress < 1 && transitionProgress > 0) return;
-    if (currentState === toState) return;
-    targetState = toState;
-    transitionProgress = 0;
-    transitionStartMs = performance.now();
-}}
-
-function tickTransition(now) {{
-    if (targetState === currentState) return;
-    var elapsed = now - transitionStartMs;
-    transitionProgress = Math.min(elapsed / T_DURATION, 1.0);
-    var t = easeInOutCubic(transitionProgress);
-    var from = currentState;
-
-    // LINEAR → NONLINEAR
-    if (from === STATE.LINEAR && targetState === STATE.NONLINEAR) {{
-        setParticlePositions(t);
-        setDBOpacity(1 - t);
-        refreshSVIndicators(0.85 * (1 - t));
-    }}
-
-    // NONLINEAR → KERNEL_3D
-    if (from === STATE.NONLINEAR && targetState === STATE.KERNEL_3D) {{
-        var liftT = smoothstep(0.0, 0.35, t);
-        applyKernelLift(liftT);
-        var showT = smoothstep(0.2, 1.0, t);
-        kernelGridGroup.visible = showT > 0.05;
-        updateGridLift(Math.min(showT * 1.4, 1.0));
-        hyperplaneGroup.visible = showT > 0.25;
-        hpMat.opacity = 0.28 * smoothstep(0.25, 0.5, t);
-        hpRingMat.opacity = 0.5 * smoothstep(0.25, 0.5, t);
-        projectionGroup.visible = showT > 0.35;
-        projCircleMat.opacity = 0.75 * smoothstep(0.35, 0.6, t);
-        updateProjectionLines(smoothstep(0.35, 0.7, t));
-        updateCamera3D(showT);
-        controls.enabled = showT > 0.5;
-        document.getElementById('note-banner').style.display = showT > 0.4 ? 'block' : 'none';
-    }}
-
-    // LINEAR → KERNEL_3D (串聯轉換)
-    if (from === STATE.LINEAR && targetState === STATE.KERNEL_3D) {{
-        var phase1End = 0.35, phase2Start = 0.25;
-        if (t <= phase1End) {{
-            var pt = Math.min(t/phase1End, 1.0);
-            setParticlePositions(pt);
-            setDBOpacity(1 - pt);
-            refreshSVIndicators(0.85 * (1 - pt));
-        }} else {{
-            setParticlePositions(1);
-            setDBOpacity(0);
-            refreshSVIndicators(0);
-        }}
-        var liftT2 = smoothstep(phase2Start, 0.65, t);
-        applyKernelLift(liftT2);
-        kernelGridGroup.visible = liftT2 > 0.05;
-        updateGridLift(Math.min(liftT2 * 1.4, 1.0));
-        var showT2 = smoothstep(phase2Start + 0.05, 1.0, t);
-        hyperplaneGroup.visible = showT2 > 0.2;
-        hpMat.opacity = 0.28 * smoothstep(0.2, 0.45, showT2);
-        hpRingMat.opacity = 0.5 * smoothstep(0.2, 0.45, showT2);
-        projectionGroup.visible = showT2 > 0.3;
-        projCircleMat.opacity = 0.75 * smoothstep(0.3, 0.55, showT2);
-        updateProjectionLines(smoothstep(0.3, 0.65, showT2));
-        updateCamera3D(showT2);
-        controls.enabled = showT2 > 0.45;
-        document.getElementById('note-banner').style.display = showT2 > 0.35 ? 'block' : 'none';
-    }}
-
-    // 轉換完成
-    if (transitionProgress >= 1.0) {{
-        currentState = targetState;
-        transitionProgress = 0;
-        updateCameraForState();
-        updateUIOverlay();
-    }}
-}}
+// FPS
+var fc2=0,lft=performance.now(),fe=document.getElementById('fps-counter');
+function uFP(now){fc2++;if(now-lft>=1000){fe.textContent='FPS: '+Math.round(fc2/((now-lft)/1000));fc2=0;lft=now}}
 
 // ============================================================
-// 重置到線性狀態
+// 動畫迴圈
 // ============================================================
-function resetToLinear() {{
-    currentState = STATE.LINEAR;
-    targetState = STATE.LINEAR;
-    transitionProgress = 0;
-    setParticlePositions(0);
-    applyKernelLift(0);
-    setDBOpacity(1);
-    refreshSVIndicators(0.85);
-    setLayerVisibility(kernelGridGroup, false);
-    setLayerVisibility(hyperplaneGroup, false);
-    setLayerVisibility(projectionGroup, false);
-    updateCameraForState();
-    updateProjectionLines(0);
-    document.getElementById('note-banner').style.display = 'none';
-    updateUIOverlay();
-}}
+function anim(ts2){
+    requestAnimationFrame(anim);
+    tT(ts2);
+    sm.rotation.y+=0.00015;sm.rotation.x+=0.00008;
+    if(cs===STATE.KERNEL_3D){hr.rotation.z+=0.003;pc2.rotation.z+=0.002}
+    refSV(cs===STATE.LINEAR?0.85:0);
+    if(controls)controls.update();
+    renderer.render(scene,camera);
+    uFP(ts2);
+}
+
+window.addEventListener('resize',function(){
+    var w2=window.innerWidth,h2=window.innerHeight;
+    camera.aspect=w2/h2;camera.updateProjectionMatrix();
+    renderer.setSize(w2,h2);
+});
 
 // ============================================================
-// 按鈕事件
+// 啟動
 // ============================================================
-document.getElementById('btn-linear').addEventListener('click', function() {{
-    resetToLinear();
-}});
+setPP(0);uUI();uCS();
+document.getElementById('status').style.display='none';
+document.getElementById('ui-overlay').style.display='block';
+document.getElementById('btn-bar').style.display='flex';
+document.getElementById('fps-counter').style.display='block';
+requestAnimationFrame(anim);
 
-document.getElementById('btn-nonlinear').addEventListener('click', function() {{
-    if (currentState === STATE.NONLINEAR) return;
-    if (currentState === STATE.KERNEL_3D) {{
-        resetToLinear();
-        setTimeout(function() {{ requestTransition(STATE.NONLINEAR); }}, 80);
-    }} else {{
-        requestTransition(STATE.NONLINEAR);
-    }}
-}});
+}catch(e){
+    document.getElementById('status').style.display='none';
+    var errEl2=document.getElementById('err');
+    errEl2.style.display='block';
+    errEl2.innerHTML='<b>場景初始化失敗</b><br><br>錯誤：'+e.message+'<br><br>請嘗試重新整理頁面';
+    console.error(e);
+}
+} // end startApp
 
-document.getElementById('btn-kernel').addEventListener('click', function() {{
-    if (currentState === STATE.KERNEL_3D) return;
-    requestTransition(STATE.KERNEL_3D);
-}});
-
-// ============================================================
-// FPS 計數器
-// ============================================================
-var frameCount = 0;
-var lastFpsTime = performance.now();
-var fpsEl = document.getElementById('fps-counter');
-
-function updateFPS(now) {{
-    frameCount++;
-    if (now - lastFpsTime >= 1000) {{
-        var fps = Math.round(frameCount / ((now - lastFpsTime) / 1000));
-        fpsEl.textContent = 'FPS: ' + fps;
-        frameCount = 0;
-        lastFpsTime = now;
-    }}
-}}
-
-// ============================================================
-// 主動畫迴圈
-// ============================================================
-function animate(timestamp) {{
-    requestAnimationFrame(animate);
-    tickTransition(timestamp);
-    starsMesh.rotation.y += 0.00015;
-    starsMesh.rotation.x += 0.00008;
-    if (currentState === STATE.KERNEL_3D) {{
-        hpRingMesh.rotation.z += 0.003;
-        projCircle.rotation.z += 0.002;
-    }}
-    refreshSVIndicators(currentState === STATE.LINEAR ? 0.85 : 0);
-    controls.update();
-    renderer.render(scene, camera);
-    updateFPS(timestamp);
-}}
-
-// ============================================================
-// 視窗大小調整
-// ============================================================
-window.addEventListener('resize', function() {{
-    var w2 = window.innerWidth, h2 = window.innerHeight;
-    camera.aspect = w2 / h2;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w2, h2);
-}});
-
-// ============================================================
-// 初始化 — 顯示 UI 並開始動畫
-// ============================================================
-try {{
-    setParticlePositions(0);
-    updateUIOverlay();
-    updateCameraForState();
-    hideLoading();
-    showUI();
-    requestAnimationFrame(animate);
-}} catch(e) {{
-    showError('場景初始化失敗：' + e.message);
-    throw e;
-}}
-
-}})(); // IIFE 結束
+})(); // IIFE
 </script>
 </body>
 </html>"""
 
 
 # ============================================================
-# STREAMLIT 進入點 (中文)
+# STREAMLIT 進入點
 # ============================================================
 
 def main():
@@ -841,23 +496,26 @@ def main():
         page_icon="🔮",
         layout="wide",
     )
+
     st.title("🔮 SVM 核方法：3D 互動視覺化")
-    st.markdown(
-        """
-        **教學視覺化**：展示支持向量機 (SVM) 如何透過
-        **核方法 (Kernel Trick)** 將非線性可分的資料映射到
-        高維空間中，使其變得線性可分。
+    st.markdown("""
+    **教學視覺化**：展示支持向量機 (SVM) 如何透過
+    **核方法 (Kernel Trick)** 將非線性可分的資料映射到
+    高維空間中，使其變得線性可分。
 
-        使用下方 3D 畫面中的按鈕逐步切換狀態：
-        **線性 SVM** → **非線性資料** → **核方法 3D**。
-        在 3D 狀態下，可拖曳旋轉、滾輪縮放、右鍵平移。
-        """
-    )
+    使用下方 3D 畫面中的按鈕逐步切換狀態：
+    **線性 SVM** → **非線性資料** → **核方法 3D**。
+    在 3D 狀態下，可拖曳旋轉、滾輪縮放、右鍵平移。
+    """)
 
-    data = generate_datasets()
-    data_json = to_json_compact(data)
-    html = build_html(data_json)
-    components.html(html, height=750, scrolling=True)
+    try:
+        data = _generate_datasets()
+        data_json = json.dumps(data, indent=None, separators=(",", ":"))
+        html = THREEJS_HTML_TEMPLATE.replace("__DATA__", data_json)
+        components.html(html, height=750, scrolling=True)
+    except Exception as e:
+        st.error(f"應用程式錯誤：{e}")
+        st.code(str(e))
 
 
 if __name__ == "__main__":
