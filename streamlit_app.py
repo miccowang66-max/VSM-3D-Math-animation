@@ -440,18 +440,46 @@ def build_nonlinear_figure(data):
     return fig
 
 
-def build_kernel_3d_figure(data):
-    """核方法 3D — 3D 散點 + SVM 決策平面 + 投影邊界曲線。"""
-    fig = go.Figure()
+def build_kernel_3d_figure(data, t=1.0):
+    """
+    核方法 3D — 2D→3D 動態升維動畫。
+    t=0: 所有點在 z=0 平面（非線性不可分）
+    t=1: 完整升維 + SVM 決策平面 + 投影邊界
+    """
     a_nl, b_nl = data["a_nl"], data["b_nl"]
     znr, znb = data["znr"], data["znb"]
+    w3, b3 = data["w3"], data["b3"]
     sv3 = data["sv_3d_phi"]
     curve = data["curve_2d"]
     Xp, Yp, Zp = data["plane_pts"]
     n = data["n"]
     zs = data["z_scale"]
 
-    # 建立 SV 集合
+    # ---- 動畫階段 ----
+    z_lift = float(np.clip(t / 0.5, 0, 1))        # 0-50%: Z 軸提升
+    surface_t = float(np.clip((t - 0.4) / 0.6, 0, 1))  # 40-100%: 平面+曲線浮現
+
+    # Z 值動態插值
+    za = znr * z_lift
+    zb = znb * z_lift
+    zsv = sv3[:, 2] * z_lift if len(sv3) > 0 else []
+
+    # 平面 Z 值
+    pz = Zp * surface_t
+    plane_opacity = 0.45 * surface_t
+
+    # 投影邊界曲線透明度
+    curve_opacity = 0.85 * surface_t
+
+    # SV 透明度
+    sv_opacity = 0.95 * surface_t
+
+    # 相機：從俯視 → 3/4 視角
+    cx = float(np.interp(surface_t, [0, 1], [0, 1.6]))
+    cy = float(np.interp(surface_t, [0, 1], [0, 1.6]))
+    cz = float(np.interp(surface_t, [0, 1], [2.5, 1.2]))
+
+    # ---- 建立 SV 集合（比對 3D 座標）----
     sv_set = set()
     for sv in sv3:
         sv_set.add((round(sv[0], 3), round(sv[1], 3), round(sv[2], 2)))
@@ -459,61 +487,70 @@ def build_kernel_3d_figure(data):
     mask_a = np.ones(n, dtype=bool)
     mask_b = np.ones(n, dtype=bool)
     for i in range(n):
-        if (round(a_nl[i,0],3), round(a_nl[i,1],3), round(znr[i],2)) in sv_set:
+        if (round(a_nl[i, 0], 3), round(a_nl[i, 1], 3), round(znr[i], 2)) in sv_set:
             mask_a[i] = False
-        if (round(b_nl[i,0],3), round(b_nl[i,1],3), round(znb[i],2)) in sv_set:
+        if (round(b_nl[i, 0], 3), round(b_nl[i, 1], 3), round(znb[i], 2)) in sv_set:
             mask_b[i] = False
 
-    # Class A
+    # ---- 建構 Plotly 圖表 ----
+    fig = go.Figure()
+
+    # 類別 A 粒子（Z 值隨 t 動態變化）
     fig.add_trace(go.Scatter3d(
-        x=a_nl[mask_a, 0], y=a_nl[mask_a, 1], z=znr[mask_a],
+        x=a_nl[mask_a, 0], y=a_nl[mask_a, 1], z=za[mask_a],
         mode='markers', name='類別 A',
-        marker=dict(size=4, color=C_TEAL, opacity=0.8),
-        hovertemplate='(%{x:.1f}, %{y:.1f}, %{z:.1f})<extra></extra>',
-    ))
-    # Class B
-    fig.add_trace(go.Scatter3d(
-        x=b_nl[mask_b, 0], y=b_nl[mask_b, 1], z=znb[mask_b],
-        mode='markers', name='類別 B',
-        marker=dict(size=4, color=C_PURPLE, opacity=0.8),
+        marker=dict(size=4, color=C_TEAL, opacity=0.85),
         hovertemplate='(%{x:.1f}, %{y:.1f}, %{z:.1f})<extra></extra>',
     ))
 
-    # SV 3D
-    if len(sv3) > 0:
+    # 類別 B 粒子
+    fig.add_trace(go.Scatter3d(
+        x=b_nl[mask_b, 0], y=b_nl[mask_b, 1], z=zb[mask_b],
+        mode='markers', name='類別 B',
+        marker=dict(size=4, color=C_PURPLE, opacity=0.85),
+        hovertemplate='(%{x:.1f}, %{y:.1f}, %{z:.1f})<extra></extra>',
+    ))
+
+    # 3D 支持向量（僅在後段顯示）
+    if len(sv3) > 0 and surface_t > 0.1:
         fig.add_trace(go.Scatter3d(
-            x=sv3[:, 0], y=sv3[:, 1], z=sv3[:, 2],
+            x=sv3[:, 0], y=sv3[:, 1], z=zsv,
             mode='markers', name='3D SV',
-            marker=dict(size=7, color=C_GOLD, opacity=0.95,
+            marker=dict(size=8, color=C_GOLD, opacity=sv_opacity,
                          line=dict(width=1.5, color='#FFFFFF'),
                          symbol='diamond'),
             hovertemplate='SV<extra></extra>',
         ))
 
-    # 決策平面 (Surface) — 最小化參數以確保相容性
-    fig.add_trace(go.Surface(
-        x=Xp, y=Yp, z=Zp,
-        colorscale=[[0, 'rgba(180,210,255,0.18)'], [1, 'rgba(180,210,255,0.42)']],
-        showscale=False,
-        opacity=0.6,
-        contours=dict(
-            x=dict(show=True, color='rgba(160,200,255,0.2)', width=1),
-            y=dict(show=True, color='rgba(160,200,255,0.2)', width=1),
-        ),
-        name='SVM 決策平面',
-        hovertemplate='z=%{z:.1f}<extra>決策面</extra>',
-    ))
-
-    # 地板投影曲線
-    if len(curve) > 1:
-        fig.add_trace(go.Scatter3d(
-            x=curve[:, 0], y=curve[:, 1], z=np.zeros(len(curve)),
-            mode='lines', name='2D 邊界',
-            line=dict(color=C_CURVE, width=2.5),
-            hovertemplate='投影邊界<extra></extra>',
+    # SVM 決策平面（僅在後段顯示）
+    if surface_t > 0.1:
+        fig.add_trace(go.Surface(
+            x=Xp, y=Yp, z=pz,
+            colorscale=[[0, 'rgba(34,211,238,0.55)'],
+                         [0.48, 'rgba(255,255,255,0.10)'],
+                         [0.52, 'rgba(255,255,255,0.10)'],
+                         [1, 'rgba(168,85,247,0.55)']],
+            showscale=False,
+            opacity=plane_opacity,
+            contours=dict(
+                x=dict(show=True, color='rgba(160,200,255,0.25)', width=1),
+                y=dict(show=True, color='rgba(160,200,255,0.25)', width=1),
+            ),
+            name='SVM 決策平面',
+            hovertemplate='z=%{z:.1f}<extra>決策面</extra>',
         ))
 
-    # 場景設定
+    # 2D 投影邊界曲線（綠色，在 z=0 平面）
+    if len(curve) > 1 and surface_t > 0.1:
+        fig.add_trace(go.Scatter3d(
+            x=curve[:, 0], y=curve[:, 1], z=np.zeros(len(curve)),
+            mode='lines', name='2D 投影邊界',
+            line=dict(color=C_CURVE, width=2.5),
+            opacity=curve_opacity,
+            hovertemplate='決策邊界<extra></extra>',
+        ))
+
+    # ---- 場景佈局 ----
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor='rgba(0,0,0,0)',
@@ -526,8 +563,8 @@ def build_kernel_3d_figure(data):
                         range=[-7.5, 7.5], title_font=dict(color='#94A3B8')),
             zaxis=dict(title='Φ(z)', showgrid=True, gridcolor=C_GRID,
                         backgroundcolor='rgba(0,0,0,0)',
-                        range=[-0.5, zs+3], title_font=dict(color='#94A3B8')),
-            camera=dict(eye=dict(x=1.6, y=1.6, z=1.2)),
+                        range=[-0.5, zs + 3], title_font=dict(color='#94A3B8')),
+            camera=dict(eye=dict(x=cx, y=cy, z=cz)),
         ),
         margin=dict(l=0, r=0, t=20, b=0),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
@@ -701,7 +738,7 @@ def main():
         elif current_idx == 1:
             fig = build_nonlinear_figure(data)
         else:
-            fig = build_kernel_3d_figure(data)
+            fig = build_kernel_3d_figure(data, t_val)
 
         st.plotly_chart(fig, use_container_width=True, config={
             'displayModeBar': True,
