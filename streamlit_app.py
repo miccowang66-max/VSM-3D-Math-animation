@@ -132,6 +132,8 @@ def fig_nonlinear(d):
 def fig_kernel3d(d):
     a,b=d["a_nl"],d["b_nl"]; znr,znb=d["znr"],d["znb"]; sv3=d["sv_3d_phi"]
     cv=d["curve_2d"]; Xp,Yp,Zp=d["plane_pts"]; n=d["n"]; zs=d["z_scale"]
+    w3,b3=d["w3"],d["b3"]
+
     svs=set()
     for sv in sv3: svs.add((round(sv[0],3),round(sv[1],3),round(sv[2],2)))
     ma=np.ones(n,dtype=bool); mb=np.ones(n,dtype=bool)
@@ -139,23 +141,75 @@ def fig_kernel3d(d):
         if (round(a[i,0],3),round(a[i,1],3),round(znr[i],2)) in svs: ma[i]=False
         if (round(b[i,0],3),round(b[i,1],3),round(znb[i],2)) in svs: mb[i]=False
 
+    # ---- 決策函數網格（用於地板著色與平面著色）----
+    R=60; xs=np.linspace(-7,7,R); ys=np.linspace(-7,7,R)
+    Xg,Yg=np.meshgrid(xs,ys); R2=Xg**2+Yg**2
+    Zphi=zs*np.exp(-R2)
+    # f(x,y) = w3[0]*x + w3[1]*y + w3[2]*Φ(z) + b3
+    Fval=w3[0]*Xg + w3[1]*Yg + w3[2]*Zphi + b3
+    famx=np.abs(Fval).max()
+
+    # ---- 計算每個資料點的決策函數值 ----
+    r2_a=np.sum(a**2,axis=1); zphi_a=zs*np.exp(-r2_a)
+    fa=w3[0]*a[:,0]+w3[1]*a[:,1]+w3[2]*zphi_a+b3
+    r2_b=np.sum(b**2,axis=1); zphi_b=zs*np.exp(-r2_b)
+    fb=w3[0]*b[:,0]+w3[1]*b[:,1]+w3[2]*zphi_b+b3
+
     fig=go.Figure()
-    fig.add_trace(go.Scatter3d(x=a[ma,0],y=a[ma,1],z=znr[ma],mode='markers',name='類別 A',
-        marker=dict(size=4,color=C_TEAL,opacity=0.85)))
-    fig.add_trace(go.Scatter3d(x=b[mb,0],y=b[mb,1],z=znb[mb],mode='markers',name='類別 B',
-        marker=dict(size=4,color=C_PURPLE,opacity=0.85)))
+
+    # ---- 地板決策函數熱力圖 ----
+    fig.add_trace(go.Surface(
+        x=Xg,y=Yg,z=np.zeros_like(Xg),
+        surfacecolor=Fval,
+        colorscale=[[0,'#A855F7'],[0.5,'#1E293B'],[1,'#22D3EE']],
+        cmin=-famx,cmax=famx,showscale=True,
+        colorbar=dict(title='f(x)', titleside='right', titlefont=dict(color='#94A3B8'),
+                       tickfont=dict(color='#94A3B8'), len=0.5, y=0.25),
+        opacity=0.65,name='決策函數 f(x)',
+        hovertemplate='f=%{surfacecolor:.2f}<extra>決策值</extra>',
+        contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1,project=dict(z=False))),
+    ))
+
+    # ---- 3D 資料粒子（含決策函數 hover）----
+    fig.add_trace(go.Scatter3d(
+        x=a[ma,0],y=a[ma,1],z=znr[ma],mode='markers',name='類別 A',
+        marker=dict(size=4,color=C_TEAL,opacity=0.85),
+        customdata=fa[ma],hovertemplate='x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>f=%{customdata:.3f}<extra>A</extra>',
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=b[mb,0],y=b[mb,1],z=znb[mb],mode='markers',name='類別 B',
+        marker=dict(size=4,color=C_PURPLE,opacity=0.85),
+        customdata=fb[mb],hovertemplate='x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>f=%{customdata:.3f}<extra>B</extra>',
+    ))
+
+    # ---- 3D SV ----
     if len(sv3)>0:
-        fig.add_trace(go.Scatter3d(x=sv3[:,0],y=sv3[:,1],z=sv3[:,2],mode='markers',name='3D SV',
-            marker=dict(size=8,color=C_GOLD,opacity=1,line=dict(width=2,color='#FFF'),symbol='diamond')))
-    fig.add_trace(go.Surface(x=Xp,y=Yp,z=Zp,
-        colorscale=[[0,'rgba(180,210,255,0.2)'],[1,'rgba(180,210,255,0.45)']],
-        showscale=False,opacity=0.55,
-        contours=dict(x=dict(show=True,color='rgba(160,200,255,0.3)',width=1),
-                      y=dict(show=True,color='rgba(160,200,255,0.3)',width=1)),
-        name='SVM 決策平面'))
+        sv_fa=w3[0]*sv3[:,0]+w3[1]*sv3[:,1]+w3[2]*sv3[:,2]+b3
+        fig.add_trace(go.Scatter3d(
+            x=sv3[:,0],y=sv3[:,1],z=sv3[:,2],mode='markers',name='3D SV',
+            marker=dict(size=8,color=C_GOLD,opacity=1,line=dict(width=2,color='#FFF'),symbol='diamond'),
+            customdata=sv_fa,hovertemplate='SV f=%{customdata:.3f}<extra></extra>',
+        ))
+
+    # ---- SVM 決策平面 (f=0) ----
+    fig.add_trace(go.Surface(
+        x=Xp,y=Yp,z=Zp,
+        colorscale=[[0,'rgba(34,211,238,0.55)'],[0.48,'rgba(255,255,255,0.12)'],[0.52,'rgba(255,255,255,0.12)'],[1,'rgba(168,85,247,0.55)']],
+        showscale=False,opacity=0.5,
+        contours=dict(x=dict(show=True,color='rgba(200,220,255,0.35)',width=1),
+                      y=dict(show=True,color='rgba(200,220,255,0.35)',width=1)),
+        name='決策平面 f=0',
+        hovertemplate='z=%{z:.1f}<extra>f=0 決策面</extra>',
+    ))
+
+    # ---- 2D 投影邊界 ----
     if len(cv)>1:
-        fig.add_trace(go.Scatter3d(x=cv[:,0],y=cv[:,1],z=np.zeros(len(cv)),mode='lines',
-            name='2D 投影邊界',line=dict(color=C_CURVE,width=3)))
+        fig.add_trace(go.Scatter3d(
+            x=cv[:,0],y=cv[:,1],z=np.zeros(len(cv)),mode='lines',
+            name='投影邊界',line=dict(color=C_CURVE,width=3),
+            hovertemplate='f=0 邊界<extra></extra>',
+        ))
+
     fig.update_layout(template="plotly_dark",paper_bgcolor='rgba(0,0,0,0)',
         scene=dict(
             xaxis=dict(title='x₁',gridcolor=C_GRID,backgroundcolor='rgba(0,0,0,0)',range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
@@ -228,7 +282,7 @@ def _main():
     info={
         "線性 SVM":("f(x) = wᵀx + b","資料 <b style='color:#22D3EE'>完美線性可分</b>。SVM 找到最大化邊界的 <b style='color:#E2E8F0'>最佳超平面</b>。<br>白線為決策邊界，金黃虛線為邊界 ±1，金色圓圈為支持向量。"),
         "非線性資料":("不存在線性分隔器","資料 <b style='color:#FBBF24'>無法</b> 用直線分開。碧藍群聚中心，霓虹紫環繞外圍。<br><b style='color:#A855F7'>核方法</b> 映射到高維特徵空間。"),
-        "核方法 3D":(f"Φ(x₁,x₂) = (x₁,x₂,{zs:.0f}·e<sup>−(x₁²+x₂²)</sup>)",f"資料 <b style='color:#22D3EE'>提升到 3D</b>！SVM 決策平面：{w3[0]:.2f}x₁+{w3[1]:.2f}x₂+{w3[2]:.2f}z+{b3:.2f}=0<br>半透明面為 <b style='color:#E2E8F0'>3D 決策平面</b>，綠線為 <b style='color:#4ADE80'>2D 投影邊界</b>。<br>💡 拖曳旋轉/縮放圖表。"),
+        "核方法 3D":(f"Φ(x₁,x₂) = (x₁,x₂,{zs:.0f}·e<sup>−(x₁²+x₂²)</sup>)",f"資料 <b style='color:#22D3EE'>提升到 3D</b>！<br>SVM 決策函數 f(x)=w·Φ(x)+b，平面處 f=0。<br><b style='color:#A855F7'>地板熱力圖</b>：紫=f&lt;0（A側），青=f&gt;0（B側）。<br>半透明面為 <b style='color:#E2E8F0'>3D 決策平面</b>，綠線為 <b style='color:#4ADE80'>2D 邊界</b>。<br>💡 hover 粒子可看 f 值，拖曳旋轉/縮放。"),
     }
     fi,fb=info[sl]
     st.markdown(f'<div class="card"><h3>{sl}</h3><p style="color:#FBBF24;font-family:monospace;font-size:1rem;">{fi}</p><p>{fb}</p></div>',unsafe_allow_html=True)
