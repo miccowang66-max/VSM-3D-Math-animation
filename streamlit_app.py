@@ -364,8 +364,7 @@ def build_kernel_3d_figure(data):
 
 CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+html, body, [class*="css"] { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft YaHei', sans-serif; }
 .stApp { background: linear-gradient(160deg, #0A0A1A 0%, #0F1729 40%, #0C1222 100%); }
 [data-testid="stSidebar"] { background: rgba(15,23,42,0.92) !important; backdrop-filter: blur(16px); border-right: 1px solid rgba(100,116,139,0.15); }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3,
@@ -387,6 +386,16 @@ html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystem
 # ============================================================
 
 def main():
+    try:
+        _main_impl()
+    except Exception as e:
+        st.error(f"🚨 應用程式啟動失敗：{e}")
+        st.code(str(e))
+        import traceback
+        st.code(traceback.format_exc())
+
+
+def _main_impl():
     st.set_page_config(page_title="SVM 核方法 — 3D 視覺化", page_icon="🔮", layout="wide")
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
