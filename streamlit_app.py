@@ -71,8 +71,8 @@ canvas{display:block}
 #fps{position:absolute;top:8px;right:12px;color:#333;font-size:10px;font-family:monospace;z-index:10}
 #load{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#0ff;font-size:16px;z-index:100}
 </style></head><body>
-<div id="load">Loading 3D...</div>
-<div id="ui"><div id="state"></div><div id="formula"></div><div id="info"></div></div>
+<div id="load">Loading 3D scene...</div>
+<div id="ui"><div id="state">SVM Kernel Trick</div><div id="formula">f(x) = wᵀx + b</div><div id="info">Initializing visualization...</div></div>
 <div id="btns">
 <button id="b0" class="active">Linear SVM</button>
 <button id="b1">Nonlinear</button>
@@ -82,7 +82,7 @@ canvas{display:block}
 var DATA = __DATA__;
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
- onload="init()" onerror="document.getElementById('load').textContent='Three.js load failed'">
+ defer onload="init()" onerror="document.getElementById('load').textContent='CDN failed'">
 </script>
 <script>
 var N,scene,camera,renderer,redPts,bluePts,redGeo,blueGeo;
@@ -168,9 +168,9 @@ function init(){
  // z pillar
  scene.add(line(0,0,-3,0,0,hpZ+4,0x335566,0.03));
 
- setPositions(0);updateUI();updateSV();
- document.getElementById('load').style.display='none';
- animate(0);
+  setPositions(0);updateUI();updateSV();
+  document.getElementById('load').style.display='none';
+  animate(0);
 }
 function line(x1,y1,z1,x2,y2,z2,color,width){
  var d=new THREE.Vector3(x2-x1,y2-y1,z2-z1),len=d.length();
