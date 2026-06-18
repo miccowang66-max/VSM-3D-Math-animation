@@ -334,9 +334,9 @@ def _main():
         playing = st.session_state.get("_playing", False)
         c4,c5 = st.columns(2)
         with c4:
-            if st.button("▶ 播放" if not playing else "⏸ 播放中…",use_container_width=True,key="_btn_play"):
-                st.session_state["_playing"] = True
-                st.session_state["_auto_frame"] = 0
+            if st.button("⏸ 停止" if playing else "▶ 播放",use_container_width=True,key="_btn_play"):
+                st.session_state["_playing"] = not playing
+                if not playing: st.session_state["_auto_frame"] = 0
                 st.rerun()
         with c5:
             if st.button("↺ 重設",use_container_width=True,key="_btn_reset"):
@@ -350,17 +350,18 @@ def _main():
             st.markdown(f'<div style="display:flex;align-items:center;margin:5px 0;font-size:0.85rem;color:#94A3B8"><span class="legend-dot" style="background:{c};box-shadow:0 0 6px {c}44"></span>{l}</div>',unsafe_allow_html=True)
         st.markdown("---"); st.caption(f"n={np_val}, z={zs_val:.1f}")
 
-    # ---- 動畫狀態管理 ----
+    # ---- 動畫狀態管理（JS reload 取代 st.rerun 迴圈）----
     playing = st.session_state.get("_playing", False)
     if playing:
         frame = st.session_state.get("_auto_frame", 0)
         if frame < 100:
-            frame += 3  # 一次跳 3%，共約 33 幀
+            frame += 3
             if frame > 100: frame = 100
             st.session_state["_auto_frame"] = frame
             t_val = frame / 100.0
-            time.sleep(0.06)
-            st.rerun()
+            # JS 定時器觸發頁面重載（避免 Python sleep 阻塞）
+            import streamlit.components.v1 as cp
+            cp.html(f"<script>setTimeout(function(){{window.parent.location.reload()}},{70 if frame<90 else 300})</script>",height=0)
         else:
             st.session_state["_playing"] = False
             t_val = 1.0
