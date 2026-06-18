@@ -163,11 +163,11 @@ def fig_kernel3d(d):
         surfacecolor=Fval,
         colorscale=[[0,'#A855F7'],[0.5,'#1E293B'],[1,'#22D3EE']],
         cmin=-famx,cmax=famx,showscale=True,
-        colorbar=dict(title='f(x)', titleside='right', titlefont=dict(color='#94A3B8'),
+        colorbar=dict(title=dict(text='f(x)',side='right',font=dict(color='#94A3B8')),
                        tickfont=dict(color='#94A3B8'), len=0.5, y=0.25),
         opacity=0.65,name='決策函數 f(x)',
         hovertemplate='f=%{surfacecolor:.2f}<extra>決策值</extra>',
-        contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1,project=dict(z=False))),
+        contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1)),
     ))
 
     # ---- 3D 資料粒子（含決策函數 hover）----
