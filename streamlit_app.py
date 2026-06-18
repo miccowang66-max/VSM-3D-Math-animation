@@ -319,16 +319,19 @@ def _main():
         ci=st.session_state.get("_si",0); STATES=["線性 SVM","非線性資料","核方法 3D"]
         c1,c2,c3=st.columns(3)
         with c1:
-            if st.button("📐 線性",use_container_width=True,type="primary" if ci==0 else "secondary"): st.session_state["_si"]=0;st.session_state["_t"]=1.0;st.rerun()
+            if st.button("📐 線性",use_container_width=True,type="primary" if ci==0 else "secondary"): st.session_state["_si"]=0;st.session_state["_anim_val"]=100;st.rerun()
         with c2:
-            if st.button("🔄 非線性",use_container_width=True,type="primary" if ci==1 else "secondary"): st.session_state["_si"]=1;st.session_state["_t"]=1.0;st.rerun()
+            if st.button("🔄 非線性",use_container_width=True,type="primary" if ci==1 else "secondary"): st.session_state["_si"]=1;st.session_state["_anim_val"]=100;st.rerun()
         with c3:
-            if st.button("🧊 3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state["_si"]=2;st.session_state["_t"]=1.0;st.rerun()
+            if st.button("🧊 3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state["_si"]=2;st.session_state["_anim_val"]=100;st.rerun()
 
         # ---- 動畫控制 ----
         st.markdown("---"); st.markdown("### 🎬 動畫")
-        anim_t = st.slider("進度",0,100,100,1,key="_anim_slider",help="拖曳控制動畫進度")
+        anim_t = st.slider("進度",0,100,st.session_state.get("_anim_val",100),1,key="_anim_slider",
+                           help="拖曳控制動畫進度")
         auto = st.checkbox("▶ 自動播放",key="_auto",help="自動從 0% 播放到 100%")
+        # 將滑桿目前值記下來
+        st.session_state["_anim_val"] = anim_t
 
         st.markdown("---"); st.markdown("### 🎨 圖例")
         for c,l in [(C_TEAL,"類別 A"),(C_PURPLE,"類別 B"),(C_GOLD,"支持向量"),("#FFF","決策邊界"),(C_MARGIN,"邊界線"),(C_CURVE,"投影曲線")]:
@@ -337,13 +340,12 @@ def _main():
 
     # ---- 動畫狀態管理 ----
     if auto:
-        # 遞增進度
-        st.session_state["_anim_slider"] = (st.session_state.get("_anim_slider",0) + 2) % 101
+        next_val = (st.session_state.get("_anim_val", 0) + 2) % 101
+        st.session_state["_anim_val"] = next_val
         time.sleep(0.04)
         st.rerun()
 
-    t_val = anim_t / 100.0
-    st.session_state["_t"] = t_val
+    t_val = st.session_state.get("_anim_val", 100) / 100.0
 
     st.session_state["_np"]=np_val; st.session_state["_zs"]=zs_val
     d=get_data(np_val,zs_val); w3,b3=d["w3"],d["b3"]; zs=d["z_scale"]
