@@ -224,20 +224,15 @@ def _main():
         with c3:
             if st.button("3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state.update(_si=2,_playing=True,_frame=0); st.rerun()
         st.markdown("---"); st.markdown("### Animation")
-        playing = st.session_state.get("_playing",False)
         c4,c5 = st.columns(2)
         with c4:
-            if st.button("⏸ Pause" if playing else "▶ Play",use_container_width=True,key="_btn_play"):
-                st.session_state["_playing"] = not playing
-                if not playing: st.session_state["_frame"] = 0
+            if st.button("↺ Replay",use_container_width=True,key="_btn_replay"):
+                st.session_state["_replay"] = True
                 st.rerun()
         with c5:
-            if st.button("↺ Reset",use_container_width=True,key="_btn_reset"):
-                st.session_state["_playing"] = False
-                st.session_state["_frame"] = 0
+            if st.button("⏹ Stop",use_container_width=True,key="_btn_stop"):
+                st.session_state["_replay"] = False
                 st.rerun()
-        # 不使用 manual_t，全部由 auto-play 控制
-        manual_t = 0  # dummy, not used when playing
         st.markdown("---")
         for c,l in [(C_TEAL,"Class A"),(C_PURPLE,"Class B"),(C_GOLD,"Support Vectors"),("#FFF","Decision Boundary"),(C_MARGIN,"Margins"),(C_CURVE,"Projection")]:
             st.markdown(f'<div style="display:flex;align-items:center;margin:5px 0;font-size:0.85rem;color:#94A3B8"><span class="legend-dot" style="background:{c};box-shadow:0 0 6px {c}44"></span>{l}</div>',unsafe_allow_html=True)
@@ -245,46 +240,44 @@ def _main():
     st.session_state["_np"]=np_val; st.session_state["_zs"]=zs_val
     d=get_data(np_val,zs_val); w3,b3=d["w3"],d["b3"]; zs=d["z_scale"]
 
-    # ---- auto-play logic ----
-    # 首次載入：觸發自動播放
-    if "_first_load" not in st.session_state:
-        st.session_state["_first_load"] = True
-        st.session_state["_playing"] = True
-        st.session_state["_frame"] = 0
-        st.rerun()
-
-    playing = st.session_state.get("_playing", False)
-    if playing:
-        frame = st.session_state.get("_frame", 0)
-        if frame < 100:
-            frame = min(frame + 4, 100)
-            st.session_state["_frame"] = frame
-            t_val = frame / 100.0
-            import time; time.sleep(0.15)
-            st.rerun()
-        else:
-            st.session_state["_playing"] = False
-            t_val = 1.0
-    else:
-        t_val = manual_t / 100.0
+    # ---- render ----
+    replay = st.session_state.get("_replay", True)
 
     st.markdown('<div class="main-title">SVM Kernel Trick: 3D Visualization</div>',unsafe_allow_html=True)
     st.markdown('<div class="subtitle">How SVMs use the kernel trick to map nonlinear data into higher dimensions</div>',unsafe_allow_html=True)
 
     sl=STATES[ci]
     info={
-        "Linear SVM":("f(x) = wᵀx + b","Data is <b style='color:#22D3EE'>perfectly linearly separable</b>. SVM finds the <b style='color:#E2E8F0'>optimal hyperplane</b> maximizing margin.<br>White line = decision boundary, gold dashes = margins ±1, gold circles = support vectors.<br>💡 Drag the Animation slider to see elements appear."),
-        "Nonlinear":("No linear separator in R²","Data <b style='color:#FBBF24'>cannot</b> be separated by a straight line. Teal cluster at center, purple ring around it.<br><b style='color:#A855F7'>Kernel trick</b> maps to higher-dimensional feature space.<br>💡 Drag slider to morph particles from linear to nonlinear positions."),
-        "Kernel 3D":(f"Φ(x₁,x₂) = (x₁,x₂,{zs:.0f}·e<sup>−(x₁²+x₂²)</sup>)",f"Data <b style='color:#22D3EE'>lifted to 3D</b>!<br>Decision function f(x)=w·Φ(x)+b. Plane = f=0.<br><b style='color:#A855F7'>Floor heatmap</b>: purple=f&lt;0, teal=f&gt;0.<br>Gold diamonds = 3D support vectors. Green curve = 2D projection boundary.<br>💡 Drag slider to see z-lift + camera rotate. Hover for f(x) values."),
+        "Linear SVM":("f(x) = wᵀx + b","Data <b style='color:#22D3EE'>perfectly linearly separable</b>. SVM finds the <b style='color:#E2E8F0'>optimal hyperplane</b> maximizing margin.<br>White line = decision boundary, gold dashes = margins ±1, gold circles = support vectors."),
+        "Nonlinear":("No linear separator in R²","Data <b style='color:#FBBF24'>cannot</b> be separated by a straight line. Teal cluster at center, purple ring around it.<br><b style='color:#A855F7'>Kernel trick</b> maps to higher-dimensional feature space."),
+        "Kernel 3D":(f"Φ(x₁,x₂) = (x₁,x₂,{zs:.0f}·e<sup>−(x₁²+x₂²)</sup>)",f"Data <b style='color:#22D3EE'>lifted to 3D</b>!<br>Decision function f(x)=w·Φ(x)+b. Plane = f=0.<br><b style='color:#A855F7'>Floor heatmap</b>: purple=f&lt;0, teal=f&gt;0.<br>Gold diamonds = 3D support vectors. Hover for f(x) values."),
     }
     fi,fb=info[sl]
     st.markdown(f'<div class="card"><h3>{sl}</h3><p style="color:#FBBF24;font-family:monospace;font-size:1rem;">{fi}</p><p>{fb}</p></div>',unsafe_allow_html=True)
 
     try:
-        if ci==0: fig=fig_linear(d,t_val)
-        elif ci==1: fig=fig_nonlinear(d,t_val)
-        else: fig=fig_kernel3d(d,t_val)
-        st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':True,'displaylogo':False,'modeBarButtonsToRemove':['lasso2d','select2d','sendDataToCloud'],'scrollZoom':True})
+        if ci==0: builder=fig_linear
+        elif ci==1: builder=fig_nonlinear
+        else: builder=fig_kernel3d
+
+        if replay:
+            placeholder = st.empty()
+            for frame in range(0, 101, 5):
+                t_val = frame/100.0
+                fig = builder(d, t_val)
+                with placeholder.container():
+                    st.plotly_chart(fig,use_container_width=True,
+                        config={'displayModeBar':True,'displaylogo':False,
+                                'modeBarButtonsToRemove':['lasso2d','select2d','sendDataToCloud'],
+                                'scrollZoom':True})
+                import time; time.sleep(0.12)
+            st.session_state["_replay"] = False
+        else:
+            fig = builder(d, 0.0)
+            st.plotly_chart(fig,use_container_width=True,
+                config={'displayModeBar':True,'displaylogo':False,
+                        'modeBarButtonsToRemove':['lasso2d','select2d','sendDataToCloud'],
+                        'scrollZoom':True})
     except Exception as e:
         st.error(f"Chart error: {e}"); st.code(str(e))
 
