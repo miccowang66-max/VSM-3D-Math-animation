@@ -327,11 +327,25 @@ def _main():
 
         # ---- 動畫控制 ----
         st.markdown("---"); st.markdown("### 🎬 動畫")
-        # 手動模式：slider 控制進度
-        anim_manual = st.slider("進度",0,100,st.session_state.get("_anim_manual",100),1,
+        # 手動 slider
+        anim_manual = st.slider("進度",0,100,st.session_state.get("_anim_manual",0),1,
                                 key="_anim_slider",help="拖曳控制動畫進度")
         st.session_state["_anim_manual"] = anim_manual
-        auto = st.checkbox("▶ 自動播放",key="_auto",help="自動從 0% 播放到 100%")
+
+        # 播放／重設按鈕
+        playing = st.session_state.get("_playing", False)
+        c4,c5 = st.columns(2)
+        with c4:
+            if st.button("▶ 播放" if not playing else "⏸ 播放中…",use_container_width=True,key="_btn_play"):
+                st.session_state["_playing"] = True
+                st.session_state["_auto_frame"] = 0
+                st.rerun()
+        with c5:
+            if st.button("↺ 重設",use_container_width=True,key="_btn_reset"):
+                st.session_state["_playing"] = False
+                st.session_state["_auto_frame"] = 0
+                st.session_state["_anim_manual"] = 0
+                st.rerun()
 
         st.markdown("---"); st.markdown("### 🎨 圖例")
         for c,l in [(C_TEAL,"類別 A"),(C_PURPLE,"類別 B"),(C_GOLD,"支持向量"),("#FFF","決策邊界"),(C_MARGIN,"邊界線"),(C_CURVE,"投影曲線")]:
@@ -339,17 +353,20 @@ def _main():
         st.markdown("---"); st.caption(f"n={np_val}, z={zs_val:.1f}")
 
     # ---- 動畫狀態管理 ----
-    if auto:
-        # 自動播放：使用獨立計數器，不碰 widget key
-        frame = st.session_state.get("_auto_frame", 0) + 2
-        if frame > 100: frame = 0
-        st.session_state["_auto_frame"] = frame
-        t_val = frame / 100.0
-        time.sleep(0.04)
-        st.rerun()
+    playing = st.session_state.get("_playing", False)
+    if playing:
+        frame = st.session_state.get("_auto_frame", 0)
+        if frame < 100:
+            frame += 3  # 一次跳 3%，共約 33 幀
+            if frame > 100: frame = 100
+            st.session_state["_auto_frame"] = frame
+            t_val = frame / 100.0
+            time.sleep(0.06)
+            st.rerun()
+        else:
+            st.session_state["_playing"] = False
+            t_val = 1.0
     else:
-        # 手動模式：使用 slider 值
-        st.session_state["_auto_frame"] = 0  # reset
         t_val = anim_manual / 100.0
 
     st.session_state["_np"]=np_val; st.session_state["_zs"]=zs_val
