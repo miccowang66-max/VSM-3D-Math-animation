@@ -206,19 +206,18 @@ def fig_kernel3d(d, t=1.0):
 
     fig=go.Figure()
 
-    # 地板熱力圖
-    if st_f>0.01:
-        fig.add_trace(go.Surface(
-            x=Xg,y=Yg,z=np.zeros_like(Xg),
-            surfacecolor=Fval,
-            colorscale=[[0,'#A855F7'],[0.5,'#1E293B'],[1,'#22D3EE']],
-            cmin=-famx,cmax=famx,showscale=True,
-            colorbar=dict(title=dict(text='f(x)',side='right',font=dict(color='#94A3B8')),
-                           tickfont=dict(color='#94A3B8'), len=0.5, y=0.25),
-            opacity=0.65*st_f,name='決策函數 f(x)',
-            hovertemplate='f=%{surfacecolor:.2f}<extra>決策值</extra>',
-            contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1)),
-        ))
+    # 地板熱力圖 (always present, opacity controlled)
+    fig.add_trace(go.Surface(
+        x=Xg,y=Yg,z=np.zeros_like(Xg),
+        surfacecolor=Fval,
+        colorscale=[[0,'#A855F7'],[0.5,'#1E293B'],[1,'#22D3EE']],
+        cmin=-famx,cmax=famx,showscale=True,
+        colorbar=dict(title=dict(text='f(x)',side='right',font=dict(color='#94A3B8')),
+                       tickfont=dict(color='#94A3B8'), len=0.5, y=0.25),
+        opacity=0.65*st_f,name='決策函數 f(x)',
+        hovertemplate='f=%{surfacecolor:.2f}<extra>決策值</extra>',
+        contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1)),
+    ))
 
     # 3D 粒子
     fig.add_trace(go.Scatter3d(
@@ -232,8 +231,8 @@ def fig_kernel3d(d, t=1.0):
         customdata=fb[mb],hovertemplate='x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>f=%{customdata:.3f}<extra>B</extra>',
     ))
 
-    # 3D SV
-    if len(sv3)>0 and st_f>0.01:
+    # 3D SV (always present)
+    if len(sv3)>0:
         sv_fa=w3[0]*sv3[:,0]+w3[1]*sv3[:,1]+w3[2]*sv3[:,2]+b3
         fig.add_trace(go.Scatter3d(
             x=sv3[:,0],y=sv3[:,1],z=zsv,mode='markers',name='3D SV',
@@ -241,20 +240,19 @@ def fig_kernel3d(d, t=1.0):
             customdata=sv_fa,hovertemplate='SV f=%{customdata:.3f}<extra></extra>',
         ))
 
-    # 決策平面
-    if st_f>0.01:
-        fig.add_trace(go.Surface(
-            x=Xp,y=Yp,z=pz,
-            colorscale=[[0,sc0],[0.48,wcol],[0.52,wcol],[1,sc1]],
-            showscale=False,opacity=po,
-            contours=dict(x=dict(show=st_f>0.2,color=cc,width=1),
-                          y=dict(show=st_f>0.2,color=cc,width=1)),
-            name='決策平面 f=0',
-            hovertemplate='z=%{z:.1f}<extra>f=0 決策面</extra>',
-        ))
+    # 決策平面 (always present)
+    fig.add_trace(go.Surface(
+        x=Xp,y=Yp,z=pz,
+        colorscale=[[0,sc0],[0.48,wcol],[0.52,wcol],[1,sc1]],
+        showscale=False,opacity=po,
+        contours=dict(x=dict(show=True,color=cc,width=1),
+                      y=dict(show=True,color=cc,width=1)),
+        name='決策平面 f=0',
+        hovertemplate='z=%{z:.1f}<extra>f=0 決策面</extra>',
+    ))
 
-    # 2D 投影邊界
-    if len(cv)>1 and st_f>0.01:
+    # 2D 投影邊界 (always present)
+    if len(cv)>1:
         fig.add_trace(go.Scatter3d(
             x=cv[:,0],y=cv[:,1],z=np.zeros(len(cv)),mode='lines',
             name='投影邊界',line=dict(color=C_CURVE,width=3),opacity=co,
@@ -319,11 +317,11 @@ def _main():
         ci=st.session_state.get("_si",0); STATES=["線性 SVM","非線性資料","核方法 3D"]
         c1,c2,c3=st.columns(3)
         with c1:
-            if st.button("📐 線性",use_container_width=True,type="primary" if ci==0 else "secondary"): st.session_state["_si"]=0;st.session_state["_anim_manual"]=100;st.session_state["_auto_frame"]=0;st.rerun()
+            if st.button("📐 線性",use_container_width=True,type="primary" if ci==0 else "secondary"): st.session_state["_si"]=0;st.session_state["_auto_frame"]=0;st.session_state["_playing"]=True;st.session_state["_anim_manual"]=0;st.rerun()
         with c2:
-            if st.button("🔄 非線性",use_container_width=True,type="primary" if ci==1 else "secondary"): st.session_state["_si"]=1;st.session_state["_anim_manual"]=100;st.session_state["_auto_frame"]=0;st.rerun()
+            if st.button("🔄 非線性",use_container_width=True,type="primary" if ci==1 else "secondary"): st.session_state["_si"]=1;st.session_state["_auto_frame"]=0;st.session_state["_playing"]=True;st.session_state["_anim_manual"]=0;st.rerun()
         with c3:
-            if st.button("🧊 3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state["_si"]=2;st.session_state["_anim_manual"]=100;st.session_state["_auto_frame"]=0;st.rerun()
+            if st.button("🧊 3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state["_si"]=2;st.session_state["_auto_frame"]=0;st.session_state["_playing"]=True;st.session_state["_anim_manual"]=0;st.rerun()
 
         # ---- 動畫控制 ----
         st.markdown("---"); st.markdown("### 🎬 動畫")
