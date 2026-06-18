@@ -126,6 +126,7 @@ def fig_kernel3d(d, t=1.0):
     a,b=d["a_nl"],d["b_nl"]; znr,znb=d["znr"],d["znb"]; sv3=d["sv_3d_phi"]
     cv=d["curve_2d"]; Xp,Yp,Zp=d["plane_pts"]; n=d["n"]; zs=d["z_scale"]; w3,b3=d["w3"],d["b3"]
     zl=np.clip(t/0.5,0,1); st2=np.clip((t-0.4)/0.6,0,1); st_f=float(st2)
+    is_full = (t >= 0.99)  # 只有最終幀渲染完整 Surface
     za=znr*zl; zb=znb*zl; zsv=sv3[:,2]*zl if len(sv3)>0 else []
     pz=Zp*st2; po=0.5*st_f
     cc='rgba(200,220,255,%.2f)'%(0.35*st_f)
@@ -133,11 +134,6 @@ def fig_kernel3d(d, t=1.0):
     wcol='rgba(255,255,255,%.2f)'%(0.12*st_f)
     cx=_lerp(0,1.6,st_f); cy=_lerp(0,1.6,st_f); cz=_lerp(2.5,1.2,st_f)
     svo=0.95*st_f; co=0.85*st_f
-    R=60; xs=np.linspace(-7,7,R); ys=np.linspace(-7,7,R); Xg,Yg=np.meshgrid(xs,ys)
-    Fval=w3[0]*Xg+w3[1]*Yg+w3[2]*zs*np.exp(-(Xg**2+Yg**2))+b3; famx=np.abs(Fval).max()
-    r2_a=np.sum(a**2,axis=1); r2_b=np.sum(b**2,axis=1)
-    fa=w3[0]*a[:,0]+w3[1]*a[:,1]+w3[2]*zs*np.exp(-r2_a)+b3
-    fb=w3[0]*b[:,0]+w3[1]*b[:,1]+w3[2]*zs*np.exp(-r2_b)+b3
     svs=set()
     for sv in sv3: svs.add((round(sv[0],3),round(sv[1],3),round(sv[2],2)))
     ma=np.ones(n,dtype=bool); mb=np.ones(n,dtype=bool)
@@ -145,30 +141,36 @@ def fig_kernel3d(d, t=1.0):
         if (round(a[i,0],3),round(a[i,1],3),round(znr[i],2)) in svs: ma[i]=False
         if (round(b[i,0],3),round(b[i,1],3),round(znb[i],2)) in svs: mb[i]=False
     fig=go.Figure()
-    fig.add_trace(go.Surface(x=Xg,y=Yg,z=np.zeros_like(Xg),surfacecolor=Fval,
-        colorscale=[[0,'#A855F7'],[0.5,'#1E293B'],[1,'#22D3EE']],cmin=-famx,cmax=famx,showscale=True,
-        colorbar=dict(title=dict(text='f(x)',side='right',font=dict(color='#94A3B8')),
-                       tickfont=dict(color='#94A3B8'),len=0.5,y=0.25),opacity=0.65*st_f,
-        name='f(x)',hovertemplate='f=%{surfacecolor:.2f}<extra></extra>',
-        contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1))))
-    fig.add_trace(go.Scatter3d(x=a[ma,0],y=a[ma,1],z=za[ma],mode='markers',name='類別 A',
-        marker=dict(size=4,color=C_TEAL,opacity=0.85),
-        customdata=fa[ma],hovertemplate='x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>f=%{customdata:.3f}<extra>A</extra>'))
-    fig.add_trace(go.Scatter3d(x=b[mb,0],y=b[mb,1],z=zb[mb],mode='markers',name='類別 B',
-        marker=dict(size=4,color=C_PURPLE,opacity=0.85),
-        customdata=fb[mb],hovertemplate='x=%{x:.1f} y=%{y:.1f} z=%{z:.1f}<br>f=%{customdata:.3f}<extra>B</extra>'))
-    if len(sv3)>0:
-        sv_fa=w3[0]*sv3[:,0]+w3[1]*sv3[:,1]+w3[2]*sv3[:,2]+b3
-        fig.add_trace(go.Scatter3d(x=sv3[:,0],y=sv3[:,1],z=zsv,mode='markers',name='3D SV',
-            marker=dict(size=8,color=C_GOLD,opacity=svo,line=dict(width=2,color='#FFF'),symbol='diamond'),
-            customdata=sv_fa,hovertemplate='SV f=%{customdata:.3f}<extra></extra>'))
-    fig.add_trace(go.Surface(x=Xp,y=Yp,z=pz,
-        colorscale=[[0,sc0],[0.48,wcol],[0.52,wcol],[1,sc1]],showscale=False,opacity=po,
-        contours=dict(x=dict(show=True,color=cc,width=1),y=dict(show=True,color=cc,width=1)),
-        name='f=0',hovertemplate='z=%{z:.1f}<extra>f=0</extra>'))
-    if len(cv)>1:
-        fig.add_trace(go.Scatter3d(x=cv[:,0],y=cv[:,1],z=np.zeros(len(cv)),mode='lines',
-            name='邊界',line=dict(color=C_CURVE,width=3),opacity=co,hovertemplate='f=0<extra></extra>'))
+
+    # 粒子（每幀都渲染，輕量）
+    fig.add_trace(go.Scatter3d(x=a[ma,0],y=a[ma,1],z=za[ma],mode='markers',name='Class A',
+        marker=dict(size=5,color=C_TEAL,opacity=0.9)))
+    fig.add_trace(go.Scatter3d(x=b[mb,0],y=b[mb,1],z=zb[mb],mode='markers',name='Class B',
+        marker=dict(size=5,color=C_PURPLE,opacity=0.9)))
+    if len(sv3)>0 and st_f>0.3:
+        fig.add_trace(go.Scatter3d(x=sv3[:,0],y=sv3[:,1],z=zsv,mode='markers',name='SV',
+            marker=dict(size=8,color=C_GOLD,opacity=svo,line=dict(width=2,color='#FFF'),symbol='diamond')))
+
+    # Surface traces — 僅在最終幀渲染以保持動畫流暢
+    if is_full:
+        R=60; xs=np.linspace(-7,7,R); ys=np.linspace(-7,7,R); Xg,Yg=np.meshgrid(xs,ys)
+        Fval=w3[0]*Xg+w3[1]*Yg+w3[2]*zs*np.exp(-(Xg**2+Yg**2))+b3; famx=np.abs(Fval).max()
+        fig.add_trace(go.Surface(x=Xg,y=Yg,z=np.zeros_like(Xg),surfacecolor=Fval,
+            colorscale=[[0,'#A855F7'],[0.5,'#1E293B'],[1,'#22D3EE']],cmin=-famx,cmax=famx,showscale=True,
+            colorbar=dict(title=dict(text='f(x)',side='right',font=dict(color='#94A3B8')),
+                           tickfont=dict(color='#94A3B8'),len=0.5,y=0.25),opacity=0.65,
+            name='f(x)',hovertemplate='f=%{surfacecolor:.2f}<extra></extra>',
+            contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1))))
+        fig.add_trace(go.Surface(x=Xp,y=Yp,z=Zp,
+            colorscale=[[0,'rgba(34,211,238,0.55)'],[0.48,'rgba(255,255,255,0.12)'],[0.52,'rgba(255,255,255,0.12)'],[1,'rgba(168,85,247,0.55)']],
+            showscale=False,opacity=0.5,
+            contours=dict(x=dict(show=True,color='rgba(200,220,255,0.35)',width=1),
+                          y=dict(show=True,color='rgba(200,220,255,0.35)',width=1)),
+            name='f=0',hovertemplate='z=%{z:.1f}<extra>f=0</extra>'))
+        if len(cv)>1:
+            fig.add_trace(go.Scatter3d(x=cv[:,0],y=cv[:,1],z=np.zeros(len(cv)),mode='lines',
+                name='Boundary',line=dict(color=C_CURVE,width=3),hovertemplate='f=0<extra></extra>'))
+
     fig.update_layout(template="plotly_dark",paper_bgcolor='rgba(0,0,0,0)',
         scene=dict(xaxis=dict(title='x₁',gridcolor=C_GRID,backgroundcolor='rgba(0,0,0,0)',range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
                    yaxis=dict(title='x₂',gridcolor=C_GRID,backgroundcolor='rgba(0,0,0,0)',range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
@@ -224,15 +226,10 @@ def _main():
         with c3:
             if st.button("3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state.update(_si=2,_playing=True,_frame=0); st.rerun()
         st.markdown("---"); st.markdown("### Animation")
-        c4,c5 = st.columns(2)
-        with c4:
-            if st.button("↺ Replay",use_container_width=True,key="_btn_replay"):
-                st.session_state["_replay"] = True
-                st.rerun()
-        with c5:
-            if st.button("⏹ Stop",use_container_width=True,key="_btn_stop"):
-                st.session_state["_replay"] = False
-                st.rerun()
+        replay = st.session_state.get("_replay", True)
+        if st.button("⏹ Stop" if replay else "▶ Play",use_container_width=True,key="_btn_toggle"):
+            st.session_state["_replay"] = not replay
+            st.rerun()
         st.markdown("---")
         for c,l in [(C_TEAL,"Class A"),(C_PURPLE,"Class B"),(C_GOLD,"Support Vectors"),("#FFF","Decision Boundary"),(C_MARGIN,"Margins"),(C_CURVE,"Projection")]:
             st.markdown(f'<div style="display:flex;align-items:center;margin:5px 0;font-size:0.85rem;color:#94A3B8"><span class="legend-dot" style="background:{c};box-shadow:0 0 6px {c}44"></span>{l}</div>',unsafe_allow_html=True)
@@ -262,7 +259,8 @@ def _main():
 
         if replay:
             placeholder = st.empty()
-            for frame in range(0, 101, 5):
+            import time
+            for frame in range(0, 101, 2):
                 t_val = frame/100.0
                 fig = builder(d, t_val)
                 with placeholder.container():
@@ -270,8 +268,11 @@ def _main():
                         config={'displayModeBar':True,'displaylogo':False,
                                 'modeBarButtonsToRemove':['lasso2d','select2d','sendDataToCloud'],
                                 'scrollZoom':True})
-                import time; time.sleep(0.12)
-            st.session_state["_replay"] = False
+                time.sleep(0.05)
+            # 播放完一輪後暫停再自動重播
+            if st.session_state.get("_replay", True):
+                time.sleep(1.0)
+                st.rerun()
         else:
             fig = builder(d, 0.0)
             st.plotly_chart(fig,use_container_width=True,
