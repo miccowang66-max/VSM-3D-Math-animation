@@ -296,8 +296,8 @@ div[data-testid="stRadio"] label[data-selected="true"] {
 # 圖表建構函式
 # ============================================================
 
-def build_linear_figure(data):
-    """線性 SVM — 2D 散點圖 + 決策邊界線 + 邊界線 + SV"""
+def build_linear_figure(data, t=1.0):
+    """線性 SVM — 2D 散點圖 + 決策邊界線 + 邊界線 + SV。t: 0→1 動畫進度"""
     fig = go.Figure()
 
     a_lin, b_lin = data["a_lin"], data["b_lin"]
@@ -305,6 +305,12 @@ def build_linear_figure(data):
     n = data["n"]
     w, b_2d = data["w"], data["b_2d"]
     w_n = w / np.linalg.norm(w)
+
+    # 動畫階段：三階段淡入
+    bd_op = float(np.clip(t/0.3, 0, 1))          # 0-30%: 決策邊界
+    mg_op = float(np.clip((t-0.2)/0.4, 0, 1))     # 20-60%: 邊界線
+    sv_op = float(np.clip((t-0.5)/0.5, 0, 1))     # 50-100%: SV
+    sv_sz = 1 + sv_op*11                           # SV 從小變大
 
     # 非 SV 的紅點
     mask_a_nosv = [i for i in range(n) if i not in sv_idx]
@@ -325,13 +331,13 @@ def build_linear_figure(data):
         hovertemplate='x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>',
     ))
 
-    # SV 標示
+    # SV 標示（動畫：從小變大）
     sv_a = [i for i in range(n) if i in sv_idx]
     sv_b = [i-n for i in sv_idx if i >= n]
     fig.add_trace(go.Scatter(
         x=a_lin[sv_a, 0], y=a_lin[sv_a, 1],
         mode='markers', name='支持向量',
-        marker=dict(size=12, color=C_GOLD, opacity=0.95,
+        marker=dict(size=sv_sz, color=C_GOLD, opacity=sv_op,
                      line=dict(width=2, color='rgba(255,255,255,0.5)'),
                      symbol='circle-open'),
         hovertemplate='SV-A<extra></extra>',
@@ -339,13 +345,13 @@ def build_linear_figure(data):
     fig.add_trace(go.Scatter(
         x=b_lin[sv_b, 0], y=b_lin[sv_b, 1],
         mode='markers', showlegend=False,
-        marker=dict(size=12, color=C_GOLD, opacity=0.95,
+        marker=dict(size=sv_sz, color=C_GOLD, opacity=sv_op,
                      line=dict(width=2, color='rgba(255,255,255,0.5)'),
                      symbol='circle-open'),
         hovertemplate='SV-B<extra></extra>',
     ))
 
-    # 決策邊界線: w·x + b = 0，取兩端點
+    # 決策邊界線: w·x + b = 0，取兩端點（動畫：淡入）
     perp = np.array([-w_n[1], w_n[0]])
     pc = -b_2d * w_n
     ext = 7.5
@@ -354,10 +360,11 @@ def build_linear_figure(data):
     fig.add_trace(go.Scatter(
         x=xb, y=yb, mode='lines', name='決策邊界',
         line=dict(color='#FFFFFF', width=2.2, dash='solid'),
+        opacity=bd_op,
         hovertemplate='wᵀx+b=0<extra></extra>',
     ))
 
-    # 邊界線 ±1
+    # 邊界線 ±1（動畫：淡入）
     for sign, name, dash in [(1, '+1 Margin', 'dash'), (-1, '−1 Margin', 'dash')]:
         offset = sign * w_n
         xbm = xb + offset[0]
@@ -365,7 +372,7 @@ def build_linear_figure(data):
         fig.add_trace(go.Scatter(
             x=xbm, y=ybm, mode='lines', name=name,
             line=dict(color=C_MARGIN, width=1.4, dash=dash),
-            opacity=0.7, hovertemplate='wᵀx+b=%{text}<extra></extra>',
+            opacity=mg_op*0.7, hovertemplate='wᵀx+b=%{text}<extra></extra>',
             text=[f'{sign}' for _ in xbm],
         ))
 
@@ -599,8 +606,10 @@ def main():
 
         # 互動提示
         st.markdown("---")
-        st.caption("💡 試試調整上方滑桿，改變粒子數量與 Z 軸倍率。")
-        st.caption("🖱 在圖表上拖曳可旋轉/縮放/平移。")
+        st.markdown("### 🎬 動畫進度")
+        anim_t = st.slider("拖曳滑桿觀看建構過程", 0, 100, 100, 5,
+                           help="0%=僅資料 → 30%=邊界出現 → 60%=邊界線 → 100%=完整SVM", key="_anim_t")
+        t_val = anim_t / 100.0
 
         st.markdown("---")
         st.markdown("### 🎨 圖例")
@@ -688,7 +697,7 @@ def main():
     # ---- 圖表 ----
     try:
         if current_idx == 0:
-            fig = build_linear_figure(data)
+            fig = build_linear_figure(data, t_val)
         elif current_idx == 1:
             fig = build_nonlinear_figure(data)
         else:
