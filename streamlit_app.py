@@ -1,287 +1,254 @@
 """
-streamlit_app.py — SVM Kernel Trick 3D Visualization
+streamlit_app.py — SVM Kernel Trick 3D (Three.js smooth 60fps animation)
 
 Run: streamlit run streamlit_app.py
 """
 
 import streamlit as st
-import plotly.graph_objects as go
+import streamlit.components.v1 as components
 import numpy as np
+import json
 
-DEFAULT_Z_SCALE = 8.0
-DEFAULT_N = 80
-C_TEAL = '#22D3EE'; C_PURPLE = '#A855F7'; C_GOLD = '#FBBF24'
-C_CURVE = '#4ADE80'; C_MARGIN = '#FDE68A'
-C_GRID = 'rgba(100,116,139,0.12)'
+DEFAULT_Z = 8.0; DEFAULT_N = 80
 
-def _lerp(a,b,t): return a+(b-a)*t
-
-def _generate_datasets(n_per_class=DEFAULT_N, z_scale=DEFAULT_Z_SCALE):
-    rng = np.random.RandomState(42)
-    a_lin = rng.randn(n_per_class,2)*1.2 + [-3,-3]
-    b_lin = rng.randn(n_per_class,2)*1.2 + [3,3]
-    Xl = np.vstack([a_lin,b_lin]); yl = np.hstack([np.zeros(n_per_class),np.ones(n_per_class)])
-    a_nl = rng.randn(n_per_class,2)*1.0
-    ang = rng.uniform(0,2*np.pi,n_per_class); rad = rng.uniform(3.5,5,n_per_class)
-    b_nl = np.column_stack([rad*np.cos(ang), rad*np.sin(ang)])
+def _gen(n=80, zs=8.0):
+    rng=np.random.RandomState(42)
+    al=rng.randn(n,2)*1.2+[-3,-3]; bl=rng.randn(n,2)*1.2+[3,3]
+    X=np.vstack([al,bl]); y=np.hstack([np.zeros(n),np.ones(n)])
+    an=rng.randn(n,2)*1.0
+    ang=rng.uniform(0,2*np.pi,n); rad=rng.uniform(3.5,5,n)
+    bn=np.column_stack([rad*np.cos(ang),rad*np.sin(ang)])
     try:
         from sklearn.svm import SVC
-        s = SVC(kernel="linear",C=1e10,random_state=42); s.fit(Xl,yl)
-        w = s.coef_[0].astype(np.float64); b2 = float(s.intercept_[0]); sv2 = [int(i) for i in s.support_]
-    except ImportError:
-        ca=a_lin.mean(0); cb=b_lin.mean(0); w=cb-ca; w/=np.linalg.norm(w); b2=float(-np.dot(w,(ca+cb)/2))
-        da=np.abs(np.dot(a_lin,w)+b2); db=np.abs(np.dot(b_lin,w)+b2)
-        sv2=[int(i) for i in np.where(da<=np.percentile(da,20))[0]]+[int(n_per_class+i) for i in np.where(db<=np.percentile(db,20))[0]]
-    wn=w/np.linalg.norm(w); perp=np.array([-wn[1],wn[0]],dtype=np.float64); pc=-b2*wn; ext=7.0; p1=pc+perp*ext; p2=pc-perp*ext
-    def _kz(pts): return z_scale*np.exp(-np.sum(pts**2,axis=1))
-    def _phi(pts): r2=np.sum(pts**2,axis=1); return np.column_stack([pts,z_scale*np.exp(-r2)])
-    pa=_phi(a_nl); pb=_phi(b_nl); znr=_kz(a_nl); znb=_kz(b_nl)
-    rc=pa.mean(0); bc=pb.mean(0); w3=rc-bc; w3/=np.linalg.norm(w3); mid=(rc+bc)/2; b3=float(-np.dot(w3,mid))
-    da3=np.abs(np.dot(pa,w3)+b3); db3=np.abs(np.dot(pb,w3)+b3)
-    sva=np.where(da3<=np.percentile(da3,10))[0]; svb=np.where(db3<=np.percentile(db3,10))[0]; sv3p=np.vstack([pa[sva],pb[svb]])
-    cv=_curve(w3[0],w3[1],w3[2],b3,z_scale); pX,pY,pZ=_plane(w3[0],w3[1],w3[2],b3,z_scale)
-    return dict(n=n_per_class,z_scale=z_scale,a_lin=a_lin,b_lin=b_lin,a_nl=a_nl,b_nl=b_nl,
-                znr=znr,znb=znb,w=w,b_2d=b2,sv_2d=sv2,p1=p1,p2=p2,
-                w3=w3,b3=b3,sv_3d_phi=sv3p,curve_2d=cv,plane_pts=(pX,pY,pZ),red_c=rc,blue_c=bc)
+        s=SVC(kernel="linear",C=1e10,random_state=42); s.fit(X,y)
+        w=s.coef_[0].astype(np.float64); b2=float(s.intercept_[0]); sv2=[int(i) for i in s.support_]
+    except:
+        ca=al.mean(0); cb=bl.mean(0); w=cb-ca; w/=np.linalg.norm(w); b2=float(-np.dot(w,(ca+cb)/2))
+        sv2=[int(i) for i in np.where(np.abs(np.dot(al,w)+b2)<=np.percentile(np.abs(np.dot(al,w)+b2),20))[0]]+[int(n+i) for i in np.where(np.abs(np.dot(bl,w)+b2)<=np.percentile(np.abs(np.dot(bl,w)+b2),20))[0]]
+    wn=w/np.linalg.norm(w); perp=np.array([-wn[1],wn[0]],dtype=np.float64); pc=-b2*wn; e=7.0
+    p1=pc+perp*e; p2=pc-perp*e
 
-def _curve(a,b,c,d,zs,n=150):
-    pts=[]
-    for i in range(n):
-        th=2*np.pi*i/n; ct,st=np.cos(th),np.sin(th); lo,hi=0.,7.
-        fl=a*lo*ct+b*lo*st+c*zs*np.exp(-lo*lo)+d; fh=a*hi*ct+b*hi*st+c*zs*np.exp(-hi*hi)+d
+    def kz(p): return zs*np.exp(-np.sum(p**2,axis=1))
+    def phi(p): r2=np.sum(p**2,axis=1); return np.column_stack([p,zs*np.exp(-r2)])
+    pa=phi(an); pb=phi(bn); znr=kz(an); znb=kz(bn)
+    rc=pa.mean(0); bc=pb.mean(0); w3=rc-bc; w3/=np.linalg.norm(w3); mid=(rc+bc)/2; b3=float(-np.dot(w3,mid))
+    da=np.abs(np.dot(pa,w3)+b3); db2=np.abs(np.dot(pb,w3)+b3)
+    sva=np.where(da<=np.percentile(da,10))[0]; svb=np.where(db2<=np.percentile(db2,10))[0]
+    sv3=np.vstack([pa[sva],pb[svb]]).tolist()
+
+    cv=[]
+    for i in range(120):
+        th=2*np.pi*i/120; ct,st=np.cos(th),np.sin(th); lo,hi=0.,7.
+        fl=w3[0]*lo*ct+w3[1]*lo*st+w3[2]*zs*np.exp(-lo*lo)+b3
+        fh=w3[0]*hi*ct+w3[1]*hi*st+w3[2]*zs*np.exp(-hi*hi)+b3
         if fl*fh>0: continue
         for _ in range(30):
-            mid=(lo+hi)/2; fm=a*mid*ct+b*mid*st+c*zs*np.exp(-mid*mid)+d
+            mid=(lo+hi)/2; fm=w3[0]*mid*ct+w3[1]*mid*st+w3[2]*zs*np.exp(-mid*mid)+b3
             if abs(fm)<0.005: break
             if fl*fm<0: hi=mid;fh=fm
             else: lo=mid;fl=fm
-        r=(lo+hi)/2; pts.append([float(r*ct),float(r*st)])
-    return np.array(pts)
+        r=(lo+hi)/2; cv.append([float(r*ct),float(r*st)])
 
-def _plane(a,b,c,d,zs,ext=7.0,res=40):
-    xs=np.linspace(-ext,ext,res); ys=np.linspace(-ext,ext,res)
-    X,Y=np.meshgrid(xs,ys); Z=-(a*X+b*Y+d)/c if abs(c)>1e-8 else np.zeros_like(X)
-    return X,Y,np.clip(Z,-2,zs+4)
-
-def get_data(n,z):
-    ck=f"d{n}_{z}"
-    if ck not in st.session_state: st.session_state[ck]=_generate_datasets(n,z)
-    return st.session_state[ck]
+    return dict(n=n,al=al.tolist(),bl=bl.tolist(),an=an.tolist(),bn=bn.tolist(),
+                znr=znr.tolist(),znb=znb.tolist(),w=w.tolist(),b2=b2,sv2=sv2,
+                db1=p1.tolist(),db2=p2.tolist(),w3=w3.tolist(),b3=b3,sv3=sv3,cv=cv,zs=zs)
 
 # ============================================================
-# Figures — t: 0→1 animation progress (via sidebar slider)
-# ============================================================
-
-def fig_linear(d, t=1.0):
-    a,b=d["a_lin"],d["b_lin"]; sv=set(d["sv_2d"]); n=d["n"]; w,bb=d["w"],d["b_2d"]; wn=w/np.linalg.norm(w)
-    ma=[i for i in range(n) if i not in sv]; mb=[i for i in range(n) if i+n not in sv]
-    sa=[i for i in range(n) if i in sv]; sb=[i-n for i in sv if i>=n]
-    perp=np.array([-wn[1],wn[0]]); pc=-bb*wn; ext=7.5
-    xb=np.array([pc[0]-perp[0]*ext,pc[0]+perp[0]*ext]); yb=np.array([pc[1]-perp[1]*ext,pc[1]+perp[1]*ext])
-    bd_op=np.clip(t/0.3,0,1); mg_op=np.clip((t-0.2)/0.4,0,1); sv_op=np.clip((t-0.5)/0.5,0,1); sv_sz=1+sv_op*13
-
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=a[ma,0],y=a[ma,1],mode='markers',name='類別 A',
-        marker=dict(size=8,color=C_TEAL,opacity=0.85,line=dict(width=1,color='rgba(255,255,255,0.2)'))))
-    fig.add_trace(go.Scatter(x=b[mb,0],y=b[mb,1],mode='markers',name='類別 B',
-        marker=dict(size=8,color=C_PURPLE,opacity=0.85,line=dict(width=1,color='rgba(255,255,255,0.2)'))))
-    fig.add_trace(go.Scatter(x=xb,y=yb,mode='lines',name='決策邊界 wᵀx+b=0',
-        line=dict(color='#FFFFFF',width=2.5),opacity=bd_op))
-    for s,lb in [(1,'+1'),(-1,'−1')]:
-        o=s*wn; fig.add_trace(go.Scatter(x=xb+o[0],y=yb+o[1],mode='lines',
-            name=f'邊界 {lb}',line=dict(color=C_MARGIN,width=1.5,dash='dash'),opacity=mg_op*0.85))
-    fig.add_trace(go.Scatter(x=a[sa,0],y=a[sa,1],mode='markers',name='支持向量',
-        marker=dict(size=sv_sz,color=C_GOLD,opacity=sv_op,line=dict(width=2.5,color='#FFF'),symbol='circle-open')))
-    fig.add_trace(go.Scatter(x=b[sb,0],y=b[sb,1],mode='markers',showlegend=False,
-        marker=dict(size=sv_sz,color=C_GOLD,opacity=sv_op,line=dict(width=2.5,color='#FFF'),symbol='circle-open')))
-    fig.update_layout(template="plotly_dark",paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(title='x₁',gridcolor=C_GRID,zeroline=False,range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
-        yaxis=dict(title='x₂',gridcolor=C_GRID,zeroline=False,range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
-        margin=dict(l=40,r=20,t=30,b=40),hovermode='closest',height=600,
-        legend=dict(orientation='h',yanchor='bottom',y=1.02,xanchor='left',x=0,font=dict(color='#94A3B8'),bgcolor='rgba(0,0,0,0)'))
-    return fig
-
-def fig_nonlinear(d, t=1.0):
-    a_lin,b_lin=d["a_lin"],d["b_lin"]; a_nl,b_nl=d["a_nl"],d["b_nl"]
-    et=1-(1-t)**3
-    ax=_lerp(a_lin[:,0],a_nl[:,0],et); ay=_lerp(a_lin[:,1],a_nl[:,1],et)
-    bx=_lerp(b_lin[:,0],b_nl[:,0],et); by=_lerp(b_lin[:,1],b_nl[:,1],et)
-    sz=9*(1-et)+6*et; ring_op=np.clip((t-0.7)/0.3,0,1)*0.7
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=ax,y=ay,mode='markers',name='類別 A',
-        marker=dict(size=sz,color=C_TEAL,opacity=0.85,line=dict(width=1,color='rgba(255,255,255,0.2)'))))
-    fig.add_trace(go.Scatter(x=bx,y=by,mode='markers',name='類別 B',
-        marker=dict(size=sz,color=C_PURPLE,opacity=0.85,line=dict(width=1,color='rgba(255,255,255,0.2)'))))
-    tc=np.linspace(0,2*np.pi,200)
-    fig.add_trace(go.Scatter(x=4.25*np.cos(tc),y=4.25*np.sin(tc),mode='lines',showlegend=False,
-        line=dict(color='rgba(168,85,247,0.3)',width=1.5,dash='dot'),opacity=ring_op,hoverinfo='skip'))
-    fig.update_layout(template="plotly_dark",paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(title='x₁',gridcolor=C_GRID,zeroline=False,range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
-        yaxis=dict(title='x₂',gridcolor=C_GRID,zeroline=False,range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
-        margin=dict(l=40,r=20,t=30,b=40),hovermode='closest',height=600,
-        legend=dict(orientation='h',yanchor='bottom',y=1.02,xanchor='left',x=0,font=dict(color='#94A3B8'),bgcolor='rgba(0,0,0,0)'))
-    return fig
-
-def fig_kernel3d(d, t=1.0):
-    a,b=d["a_nl"],d["b_nl"]; znr,znb=d["znr"],d["znb"]; sv3=d["sv_3d_phi"]
-    cv=d["curve_2d"]; Xp,Yp,Zp=d["plane_pts"]; n=d["n"]; zs=d["z_scale"]; w3,b3=d["w3"],d["b3"]
-    zl=np.clip(t/0.5,0,1); st2=np.clip((t-0.4)/0.6,0,1); st_f=float(st2)
-    is_full = (t >= 0.99)  # 只有最終幀渲染完整 Surface
-    za=znr*zl; zb=znb*zl; zsv=sv3[:,2]*zl if len(sv3)>0 else []
-    pz=Zp*st2; po=0.5*st_f
-    cc='rgba(200,220,255,%.2f)'%(0.35*st_f)
-    sc0='rgba(34,211,238,%.2f)'%(0.55*st_f); sc1='rgba(168,85,247,%.2f)'%(0.55*st_f)
-    wcol='rgba(255,255,255,%.2f)'%(0.12*st_f)
-    cx=_lerp(0,1.6,st_f); cy=_lerp(0,1.6,st_f); cz=_lerp(2.5,1.2,st_f)
-    svo=0.95*st_f; co=0.85*st_f
-    svs=set()
-    for sv in sv3: svs.add((round(sv[0],3),round(sv[1],3),round(sv[2],2)))
-    ma=np.ones(n,dtype=bool); mb=np.ones(n,dtype=bool)
-    for i in range(n):
-        if (round(a[i,0],3),round(a[i,1],3),round(znr[i],2)) in svs: ma[i]=False
-        if (round(b[i,0],3),round(b[i,1],3),round(znb[i],2)) in svs: mb[i]=False
-    fig=go.Figure()
-
-    # 粒子（每幀都渲染，輕量）
-    fig.add_trace(go.Scatter3d(x=a[ma,0],y=a[ma,1],z=za[ma],mode='markers',name='Class A',
-        marker=dict(size=5,color=C_TEAL,opacity=0.9)))
-    fig.add_trace(go.Scatter3d(x=b[mb,0],y=b[mb,1],z=zb[mb],mode='markers',name='Class B',
-        marker=dict(size=5,color=C_PURPLE,opacity=0.9)))
-    if len(sv3)>0 and st_f>0.3:
-        fig.add_trace(go.Scatter3d(x=sv3[:,0],y=sv3[:,1],z=zsv,mode='markers',name='SV',
-            marker=dict(size=8,color=C_GOLD,opacity=svo,line=dict(width=2,color='#FFF'),symbol='diamond')))
-
-    # Surface traces — 僅在最終幀渲染以保持動畫流暢
-    if is_full:
-        R=60; xs=np.linspace(-7,7,R); ys=np.linspace(-7,7,R); Xg,Yg=np.meshgrid(xs,ys)
-        Fval=w3[0]*Xg+w3[1]*Yg+w3[2]*zs*np.exp(-(Xg**2+Yg**2))+b3; famx=np.abs(Fval).max()
-        fig.add_trace(go.Surface(x=Xg,y=Yg,z=np.zeros_like(Xg),surfacecolor=Fval,
-            colorscale=[[0,'#A855F7'],[0.5,'#1E293B'],[1,'#22D3EE']],cmin=-famx,cmax=famx,showscale=True,
-            colorbar=dict(title=dict(text='f(x)',side='right',font=dict(color='#94A3B8')),
-                           tickfont=dict(color='#94A3B8'),len=0.5,y=0.25),opacity=0.65,
-            name='f(x)',hovertemplate='f=%{surfacecolor:.2f}<extra></extra>',
-            contours=dict(z=dict(show=True,color='rgba(255,255,255,0.4)',width=1))))
-        fig.add_trace(go.Surface(x=Xp,y=Yp,z=Zp,
-            colorscale=[[0,'rgba(34,211,238,0.55)'],[0.48,'rgba(255,255,255,0.12)'],[0.52,'rgba(255,255,255,0.12)'],[1,'rgba(168,85,247,0.55)']],
-            showscale=False,opacity=0.5,
-            contours=dict(x=dict(show=True,color='rgba(200,220,255,0.35)',width=1),
-                          y=dict(show=True,color='rgba(200,220,255,0.35)',width=1)),
-            name='f=0',hovertemplate='z=%{z:.1f}<extra>f=0</extra>'))
-        if len(cv)>1:
-            fig.add_trace(go.Scatter3d(x=cv[:,0],y=cv[:,1],z=np.zeros(len(cv)),mode='lines',
-                name='Boundary',line=dict(color=C_CURVE,width=3),hovertemplate='f=0<extra></extra>'))
-
-    fig.update_layout(template="plotly_dark",paper_bgcolor='rgba(0,0,0,0)',
-        scene=dict(xaxis=dict(title='x₁',gridcolor=C_GRID,backgroundcolor='rgba(0,0,0,0)',range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
-                   yaxis=dict(title='x₂',gridcolor=C_GRID,backgroundcolor='rgba(0,0,0,0)',range=[-7.5,7.5],title_font=dict(color='#94A3B8')),
-                   zaxis=dict(title='Φ(z)',gridcolor=C_GRID,backgroundcolor='rgba(0,0,0,0)',range=[-0.5,zs+3],title_font=dict(color='#94A3B8')),
-                   camera=dict(eye=dict(x=cx,y=cy,z=cz))),
-        margin=dict(l=0,r=0,t=20,b=0),hovermode='closest',height=620,
-        legend=dict(orientation='h',yanchor='bottom',y=1.02,xanchor='left',x=0,font=dict(color='#94A3B8'),bgcolor='rgba(0,0,0,0)'))
-    return fig
-
-# ============================================================
-CSS = """
+THREE_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SVM Kernel Trick 3D</title>
 <style>
-html,body,[class*="css"]{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang TC','Microsoft YaHei',sans-serif}
-.stApp{background:linear-gradient(160deg,#0A0A1A 0%,#0F1729 40%,#0C1222 100%)}
-[data-testid="stSidebar"]{background:rgba(15,23,42,0.92)!important;backdrop-filter:blur(16px);border-right:1px solid rgba(100,116,139,0.15)}
-[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3,
-[data-testid="stSidebar"] label,[data-testid="stSidebar"] p,[data-testid="stSidebar"] .stMarkdown,
-[data-testid="stSidebar"] span{color:#E2E8F0!important}
-[data-testid="stSidebar"] .stCaption{color:#94A3B8!important}
-[data-testid="stSidebar"] [data-testid="stButton"] button{padding:6px 2px!important;font-size:0.82rem!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;width:100%!important;display:inline-flex!important;justify-content:center!important;align-items:center!important}
-.card{background:rgba(15,23,42,0.75);border:1px solid rgba(100,116,139,0.18);border-radius:14px;padding:22px 26px;margin:14px 0;backdrop-filter:blur(12px);box-shadow:0 4px 24px rgba(0,0,0,0.3)}
-.card h3{margin-top:0;font-weight:600;color:#E2E8F0}
-.card p{color:#E2E8F0;line-height:1.7;font-size:0.95rem}
-.main-title{font-size:2rem;font-weight:700;color:#F1F5F9;letter-spacing:-0.02em;margin-bottom:4px}
-.subtitle{font-size:0.95rem;color:#94A3B8;font-weight:400}
-.legend-dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:8px;vertical-align:middle}
-.modebar{opacity:0.3}.modebar:hover{opacity:1}
-</style>
-"""
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0A0A1A;overflow:hidden;font-family:Arial,sans-serif}
+canvas{display:block}
+#ui{position:absolute;top:20px;left:20px;background:rgba(0,0,0,0.7);color:#fff;padding:16px 20px;border-radius:10px;max-width:360px;pointer-events:none;z-index:10;border:1px solid rgba(255,255,255,0.1)}
+#state{font-size:22px;font-weight:bold;margin-bottom:4px}
+#formula{font-size:13px;color:#fc0;margin-bottom:8px;font-family:monospace}
+#info{font-size:12px;color:#aaa;line-height:1.5}
+#btns{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
+#btns button{padding:11px 22px;font-size:14px;border:1px solid rgba(0,255,255,0.5);background:rgba(0,20,40,0.8);color:#0ff;border-radius:8px;cursor:pointer;transition:all .2s}
+#btns button:hover{background:rgba(0,255,255,0.15)}
+#btns button.active{background:rgba(0,255,255,0.2);border-color:#fff;color:#fff}
+#fps{position:absolute;top:8px;right:12px;color:#333;font-size:10px;font-family:monospace;z-index:10}
+#load{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#0ff;font-size:16px;z-index:100}
+</style></head><body>
+<div id="load">Loading 3D...</div>
+<div id="ui"><div id="state"></div><div id="formula"></div><div id="info"></div></div>
+<div id="btns">
+<button id="b0" class="active">Linear SVM</button>
+<button id="b1">Nonlinear</button>
+<button id="b2">Kernel 3D</button>
+</div><div id="fps"></div>
+<script>
+var DATA = __DATA__;
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
+ onload="init()" onerror="document.getElementById('load').textContent='Three.js load failed'">
+</script>
+<script>
+var N,scene,camera,renderer,redPts,bluePts,redGeo,blueGeo;
+var dbLine,marginP,marginN,svRings=[],kGrid=[],hpPlane,projCurve,projLines=[];
+var state=0, targetState=0, transT=0, transStart=0, transActive=false;
+var STATES=['LINEAR','NONLINEAR','KERNEL3'];
+var T_DUR=2200;
+var STATE_TEXT=[
+ {n:'Linear SVM',c:'#0ff',f:'f(x)=w<sup>T</sup>x+b',i:'Data <span style=color:#0f0>linearly separable</span>. SVM finds optimal hyperplane.<br><span style=color:#0f0>&#x2501;</span> Boundary: w<sup>T</sup>x+b=0<br><span style=color:#ff0>&#x2501;</span> Margins: &plusmn;1<br><span style=color:#ff0>&#x25CB;</span> Support vectors'},
+ {n:'Nonlinear Data',c:'#f0f',f:'No linear separator in &#x211D;<sup>2</sup>',i:'Data <span style=color:#ff0>not separable</span> in 2D.<br>Red cluster at center, blue ring around.<br><span style=color:#ff0>&#x2192;</span> <b>Kernel trick</b> lifts to 3D!'},
+ {n:'Kernel 3D',c:'#ff0',f:'&#x3A6;(x,y)=(x,y,'+DATA.zs.toFixed(0)+'&middot;e<sup>&#x2212;(x&sup2;+y&sup2;)</sup>)',i:'Data <span style=color:#0f0>lifted to 3D</span>!<br>Plane separates classes in kernel space.<br>Green curve = 2D projection boundary.'}
+];
+function ease(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2}
+function lerp(a,b,t){return a+(b-a)*t}
+function init(){
+ if(typeof THREE==='undefined'){document.getElementById('load').textContent='THREE missing';return}
+ N=DATA.n;
+ var W=window.innerWidth,H=window.innerHeight;
+ scene=new THREE.Scene();
+ scene.fog=new THREE.FogExp2(0x0A0A1A,0.0006);
+ camera=new THREE.PerspectiveCamera(45,W/H,0.5,100);
+ camera.position.set(3,-2,13);camera.lookAt(0,0,0);
+ renderer=new THREE.WebGLRenderer({antialias:true});
+ renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+ renderer.setClearColor(0x0A0A1A);
+ document.body.appendChild(renderer.domElement);
+ scene.add(new THREE.AmbientLight(0x333355,0.5));
+ var dl=new THREE.DirectionalLight(0xffffff,0.8);dl.position.set(3,8,10);scene.add(dl);
+
+ // stars
+ var sg=new THREE.BufferGeometry(),sc=2000,sa=new Float32Array(sc*3);
+ for(var i=0;i<sc*3;i+=3){sa[i]=(Math.random()-.5)*50;sa[i+1]=(Math.random()-.5)*50;sa[i+2]=(Math.random()-.5)*25-5}
+ sg.setAttribute('position',new THREE.BufferAttribute(sa,3));
+ scene.add(new THREE.Points(sg,new THREE.PointsMaterial({color:0xccccff,size:.04,transparent:true,opacity:.8,blending:THREE.AdditiveBlending,depthWrite:false})));
+
+ // grid
+ var gh=new THREE.GridHelper(16,24,0x222244,0x111122);scene.add(gh);
+
+ // particles
+ redGeo=new THREE.BufferGeometry();var ra=new Float32Array(N*3);
+ redGeo.setAttribute('position',new THREE.BufferAttribute(ra,3));
+ redPts=new THREE.Points(redGeo,new THREE.PointsMaterial({color:0x22d3ee,size:.22,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
+ scene.add(redPts);
+ blueGeo=new THREE.BufferGeometry();var ba=new Float32Array(N*3);
+ blueGeo.setAttribute('position',new THREE.BufferAttribute(ba,3));
+ bluePts=new THREE.Points(blueGeo,new THREE.PointsMaterial({color:0xa855f7,size:.22,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
+ scene.add(bluePts);
+
+ // decision boundary
+ dbLine=line(DATA.db1[0],DATA.db1[1],0.02, DATA.db2[0],DATA.db2[1],0.02, 0x00ff88,0.08);
+ marginP=line(DATA.db1[0]+DATA.w[0]*.14,DATA.db1[1]+DATA.w[1]*.14,0.01, DATA.db2[0]+DATA.w[0]*.14,DATA.db2[1]+DATA.w[1]*.14,0.01, 0xffcc00,0.04);
+ marginN=line(DATA.db1[0]-DATA.w[0]*.14,DATA.db1[1]-DATA.w[1]*.14,0.01, DATA.db2[0]-DATA.w[0]*.14,DATA.db2[1]-DATA.w[1]*.14,0.01, 0xffcc00,0.04);
+
+ // kernel grid
+ var kg=new THREE.Group();kg.visible=false;scene.add(kg);
+ var gr=24,ge=7.5,gd=new THREE.SphereGeometry(.05,4,4);
+ for(var i=0;i<=gr;i++)for(var j=0;j<=gr;j++){
+  var fx=(i/gr-.5)*2*ge,fy=(j/gr-.5)*2*ge;
+  var m=new THREE.Mesh(gd,new THREE.MeshBasicMaterial({color:0x8888ff,transparent:true,opacity:.5,depthTest:true}));
+  m.position.set(fx,fy,0);m.userData={bx:fx,by:fy};kg.add(m);kGrid.push(m);
+ }
+
+ // hyperplane
+ var hpg=new THREE.Group();hpg.visible=false;scene.add(hpg);
+ var hpZ=DATA.b3!==undefined? -DATA.b3/DATA.w3[2] : DATA.zs*0.35;
+ var hpMat=new THREE.MeshBasicMaterial({color:0x00ffff,side:THREE.DoubleSide,transparent:true,opacity:.3,depthWrite:false});
+ hpPlane=new THREE.Mesh(new THREE.PlaneGeometry(12,12),hpMat);hpPlane.position.z=hpZ;
+ var q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(DATA.w3[0],DATA.w3[1],DATA.w3[2]).normalize());
+ hpPlane.setRotationFromQuaternion(q);
+ var n2=DATA.w3[0]*DATA.w3[0]+DATA.w3[1]*DATA.w3[1]+DATA.w3[2]*DATA.w3[2];
+ var t2=-DATA.b3/n2;hpPlane.position.set(DATA.w3[0]*t2,DATA.w3[1]*t2,DATA.w3[2]*t2);
+ hpg.add(hpPlane);
+
+ // projection curve
+ var pcg=new THREE.Group();pcg.visible=false;scene.add(pcg);
+ if(DATA.cv&&DATA.cv.length>1){
+  for(var ci=0;ci<DATA.cv.length;ci++){
+   var c0=DATA.cv[ci],c1=DATA.cv[(ci+1)%DATA.cv.length];
+   pcg.add(line(c0[0],c0[1],0.03,c1[0],c1[1],0.03,0x4ade80,0.05));
+  }
+ }
+
+ // z pillar
+ scene.add(line(0,0,-3,0,0,hpZ+4,0x335566,0.03));
+
+ setPositions(0);updateUI();updateSV();
+ document.getElementById('load').style.display='none';
+ animate(0);
+}
+function line(x1,y1,z1,x2,y2,z2,color,width){
+ var d=new THREE.Vector3(x2-x1,y2-y1,z2-z1),len=d.length();
+ var mid=new THREE.Vector3((x1+x2)/2,(y1+y2)/2,(z1+z2)/2);
+ var g=new THREE.CylinderGeometry(width,width,len,6,1);
+ var m=new THREE.MeshBasicMaterial({color:color,transparent:true,opacity:1,depthTest:true});
+ var mesh=new THREE.Mesh(g,m);mesh.position.copy(mid);
+ mesh.setRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize()));
+ scene.add(mesh);return mesh;
+}
+function setPositions(mt){
+ var ra=redGeo.attributes.position.array,ba=blueGeo.attributes.position.array;
+ for(var i=0;i<N;i++){
+  var rx=lerp(DATA.al[i][0],DATA.an[i][0],mt),ry=lerp(DATA.al[i][1],DATA.an[i][1],mt);
+  var bx=lerp(DATA.bl[i][0],DATA.bn[i][0],mt),by=lerp(DATA.bl[i][1],DATA.bn[i][1],mt);
+  ra[i*3]=rx;ra[i*3+1]=ry;ba[i*3]=bx;ba[i*3+1]=by;
+ }
+ redGeo.attributes.position.needsUpdate=true;blueGeo.attributes.position.needsUpdate=true;
+}
+function liftZ(kt){
+ var ra=redGeo.attributes.position.array,ba=blueGeo.attributes.position.array;
+ for(var i=0;i<N;i++){ra[i*3+2]=lerp(0,DATA.znr[i],kt);ba[i*3+2]=lerp(0,DATA.znb[i],kt)}
+ redGeo.attributes.position.needsUpdate=true;blueGeo.attributes.position.needsUpdate=true;
+}
+function updateGrid(kt){for(var i=0;i<kGrid.length;i++){var n=kGrid[i],x=n.userData.bx,y=n.userData.by;n.position.z=Math.exp(-(x*x+y*y))*DATA.zs*kt}}
+function setCam(rt){camera.position.set(rt*7,rt*3,13-rt*6);camera.lookAt(0,0,lerp(0,DATA.zs*.35,rt))}
+function updateSV(){
+ while(svRings.length>0){scene.remove(svRings.pop())}
+ var rg=new THREE.TorusGeometry(.34,.055,8,20);
+ var ra=redGeo.attributes.position.array,ba=blueGeo.attributes.position.array;
+ DATA.sv2.forEach(function(idx){
+  var arr=idx<N?ra:ba,i=idx<N?idx:idx-N;
+  var r=new THREE.Mesh(rg,new THREE.MeshBasicMaterial({color:0xffbb24,transparent:true,opacity:.85,depthTest:true}));
+  r.position.set(arr[i*3],arr[i*3+1],arr[i*3+2]+.05);scene.add(r);svRings.push(r);
+ });
+}
+function updateUI(){
+ var u=STATE_TEXT[state];
+ document.getElementById('state').textContent=u.n;document.getElementById('state').style.color=u.c;
+ document.getElementById('formula').innerHTML=u.f;document.getElementById('info').innerHTML=u.i;
+ ['b0','b1','b2'].forEach(function(id,i){document.getElementById(id).className=i===state?'active':''});
+}
+function startTrans(to){targetState=to;transActive=true;transStart=performance.now();transT=0}
+function tickTrans(now){
+ if(!transActive)return;
+ var el=now-transStart;transT=Math.min(el/T_DUR,1);var t=ease(transT),f=state;
+ if(f===0&&targetState===1){setPositions(t);dbLine.material.opacity=1-t;marginP.material.opacity=(1-t)*.9;marginN.material.opacity=(1-t)*.9}
+ if((f===1||f===0)&&targetState===2){
+  if(f===0&&t<=.35){var pt=Math.min(t/.35,1);setPositions(pt);dbLine.material.opacity=1-pt;marginP.material.opacity=(1-pt)*.9;marginN.material.opacity=(1-pt)*.9}
+  else if(f===0){setPositions(1);dbLine.material.opacity=0;marginP.material.opacity=0;marginN.material.opacity=0}
+  var lt=smooth(f===0?.25:.0,f===0?.65:.35,t);liftZ(lt);
+  var st=smooth(f===0?.3:.2,f===0?1:.85,t);
+  kGrid[0].parent.visible=st>.05;updateGrid(Math.min(st*1.4,1));
+  hpPlane.parent.visible=st>.25;hpPlane.material.opacity=.3*st;
+  var pcg2=projCurve;if(!pcg2)pcg2=scene.children[scene.children.length-3];
+  if(pcg2&&pcg2.type==='Group'){pcg2.visible=st>.35;pcg2.children.forEach(function(c){if(c.material)c.material.opacity=.85*st})}
+  setCam(st);
+ }
+ if(transT>=1){state=targetState;transActive=false;setCam(state===2?1:0);if(state!==2){liftZ(0);setPositions(state===0?0:1);dbLine.material.opacity=state===0?1:0;marginP.material.opacity=state===0?.9:0;marginN.material.opacity=state===0?.9:0}updateUI()}
+}
+function smooth(e0,e1,x){var t2=Math.max(0,Math.min((x-e0)/(e1-e0),1));return t2*t2*(3-2*t2)}
+document.getElementById('b0').onclick=function(){if(state===0)return;startTrans(2);setTimeout(function(){if(!transActive){state=0;setPositions(0);liftZ(0);dbLine.material.opacity=1;marginP.material.opacity=.9;marginN.material.opacity=.9;setCam(0);updateUI();updateSV()}},50)};
+document.getElementById('b1').onclick=function(){if(state===1)return;if(state===2){state=0;setPositions(0);liftZ(0);dbLine.material.opacity=1;setCam(0);updateUI()}startTrans(1)};
+document.getElementById('b2').onclick=function(){if(state===2)return;startTrans(2)};
+var fc=0,lft=0;
+function animate(ts){
+ requestAnimationFrame(animate);
+ tickTrans(ts);
+ fc++;if(ts-lft>=1000){document.getElementById('fps').textContent='FPS:'+Math.round(fc/((ts-lft)/1000));fc=0;lft=ts}
+ renderer.render(scene,camera);
+}
+window.addEventListener('resize',function(){camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight)});
+</script></body></html>"""
 
 def main():
-    try: _main()
-    except Exception as e:
-        st.set_page_config(page_title="SVM",page_icon="🔮",layout="wide")
-        st.error(f"Error: {e}"); st.code(str(e))
+    st.set_page_config(page_title="SVM Kernel 3D",page_icon="🔮",layout="wide")
+    d=_gen();j=json.dumps(d)
+    h=THREE_HTML.replace("__DATA__",j)
+    components.html(h,height=750,scrolling=True)
 
-def _main():
-    st.set_page_config(page_title="SVM Kernel — 3D",page_icon="🔮",layout="wide")
-    st.markdown(CSS,unsafe_allow_html=True)
-
-    with st.sidebar:
-        st.markdown('<div style="padding:8px 0 16px"><div style="font-size:1.3rem;font-weight:700;color:#E2E8F0">🔮 SVM Kernel</div><div style="font-size:0.8rem;color:#64748B">3D Visualization</div></div>',unsafe_allow_html=True)
-        st.markdown("### Params")
-        np_val=st.slider("Particles/class",30,120,DEFAULT_N,10)
-        zs_val=st.slider("Z-axis scale",2.0,15.0,DEFAULT_Z_SCALE,0.5)
-        st.markdown("---"); st.markdown("### State")
-        ci=st.session_state.get("_si",0); STATES=["Linear SVM","Nonlinear","Kernel 3D"]
-        c1,c2,c3=st.columns(3)
-        with c1:
-            if st.button("Linear",use_container_width=True,type="primary" if ci==0 else "secondary"): st.session_state.update(_si=0,_playing=True,_frame=0); st.rerun()
-        with c2:
-            if st.button("Nonlinear",use_container_width=True,type="primary" if ci==1 else "secondary"): st.session_state.update(_si=1,_playing=True,_frame=0); st.rerun()
-        with c3:
-            if st.button("3D",use_container_width=True,type="primary" if ci==2 else "secondary"): st.session_state.update(_si=2,_playing=True,_frame=0); st.rerun()
-        st.markdown("---"); st.markdown("### Animation")
-        replay = st.session_state.get("_replay", True)
-        if st.button("⏹ Stop" if replay else "▶ Play",use_container_width=True,key="_btn_toggle"):
-            st.session_state["_replay"] = not replay
-            st.rerun()
-        st.markdown("---")
-        for c,l in [(C_TEAL,"Class A"),(C_PURPLE,"Class B"),(C_GOLD,"Support Vectors"),("#FFF","Decision Boundary"),(C_MARGIN,"Margins"),(C_CURVE,"Projection")]:
-            st.markdown(f'<div style="display:flex;align-items:center;margin:5px 0;font-size:0.85rem;color:#94A3B8"><span class="legend-dot" style="background:{c};box-shadow:0 0 6px {c}44"></span>{l}</div>',unsafe_allow_html=True)
-
-    st.session_state["_np"]=np_val; st.session_state["_zs"]=zs_val
-    d=get_data(np_val,zs_val); w3,b3=d["w3"],d["b3"]; zs=d["z_scale"]
-
-    # ---- render ----
-    replay = st.session_state.get("_replay", True)
-
-    st.markdown('<div class="main-title">SVM Kernel Trick: 3D Visualization</div>',unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">How SVMs use the kernel trick to map nonlinear data into higher dimensions</div>',unsafe_allow_html=True)
-
-    sl=STATES[ci]
-    info={
-        "Linear SVM":("f(x) = wᵀx + b","Data <b style='color:#22D3EE'>perfectly linearly separable</b>. SVM finds the <b style='color:#E2E8F0'>optimal hyperplane</b> maximizing margin.<br>White line = decision boundary, gold dashes = margins ±1, gold circles = support vectors."),
-        "Nonlinear":("No linear separator in R²","Data <b style='color:#FBBF24'>cannot</b> be separated by a straight line. Teal cluster at center, purple ring around it.<br><b style='color:#A855F7'>Kernel trick</b> maps to higher-dimensional feature space."),
-        "Kernel 3D":(f"Φ(x₁,x₂) = (x₁,x₂,{zs:.0f}·e<sup>−(x₁²+x₂²)</sup>)",f"Data <b style='color:#22D3EE'>lifted to 3D</b>!<br>Decision function f(x)=w·Φ(x)+b. Plane = f=0.<br><b style='color:#A855F7'>Floor heatmap</b>: purple=f&lt;0, teal=f&gt;0.<br>Gold diamonds = 3D support vectors. Hover for f(x) values."),
-    }
-    fi,fb=info[sl]
-    st.markdown(f'<div class="card"><h3>{sl}</h3><p style="color:#FBBF24;font-family:monospace;font-size:1rem;">{fi}</p><p>{fb}</p></div>',unsafe_allow_html=True)
-
-    try:
-        if ci==0: builder=fig_linear
-        elif ci==1: builder=fig_nonlinear
-        else: builder=fig_kernel3d
-
-        if replay:
-            placeholder = st.empty()
-            import time
-            for frame in range(0, 101, 2):
-                t_val = frame/100.0
-                fig = builder(d, t_val)
-                with placeholder.container():
-                    st.plotly_chart(fig,use_container_width=True,
-                        config={'displayModeBar':True,'displaylogo':False,
-                                'modeBarButtonsToRemove':['lasso2d','select2d','sendDataToCloud'],
-                                'scrollZoom':True})
-                time.sleep(0.05)
-            # 播放完一輪後暫停再自動重播
-            if st.session_state.get("_replay", True):
-                time.sleep(1.0)
-                st.rerun()
-        else:
-            fig = builder(d, 0.0)
-            st.plotly_chart(fig,use_container_width=True,
-                config={'displayModeBar':True,'displaylogo':False,
-                        'modeBarButtonsToRemove':['lasso2d','select2d','sendDataToCloud'],
-                        'scrollZoom':True})
-    except Exception as e:
-        st.error(f"Chart error: {e}"); st.code(str(e))
-
-    if ci==2: st.caption(f"Note: intuitive visualization (z={zs:.0f}·exp(-(x²+y²))), not the true infinite-dimensional RBF feature space.")
-
-if __name__=="__main__": main()
+if __name__=="__main__":main()
