@@ -12,121 +12,9 @@ Requirements: streamlit, numpy, scikit-learn
 
 import streamlit as st
 import streamlit.components.v1 as components
-import numpy as np
-import json
 
-# ============================================================
-# DATA GENERATION (Python)
-# ============================================================
-
-def generate_datasets():
-    """
-    Generate linear and nonlinear datasets plus SVM parameters.
-    All randomness uses seed 42 for reproducibility.
-    """
-    rng = np.random.RandomState(42)
-    n_per_class = 80
-
-    # --- Linear dataset (perfectly linearly separable) ---
-    # Class A (Red):   centered at (-3, -3)
-    # Class B (Blue):  centered at (+3, +3)
-    class_a_lin = rng.randn(n_per_class, 2) * 1.2 + np.array([-3, -3])
-    class_b_lin = rng.randn(n_per_class, 2) * 1.2 + np.array([3, 3])
-
-    X_linear = np.vstack([class_a_lin, class_b_lin])
-    y_linear = np.hstack([np.zeros(n_per_class), np.ones(n_per_class)])
-
-    # --- Nonlinear dataset (transformed from same particles) ---
-    # Red  → tight cluster at origin
-    # Blue → ring around origin  (NOT linearly separable in 2D)
-    class_a_nonlin = rng.randn(n_per_class, 2) * 1.0  # center cluster
-    angles = rng.uniform(0, 2 * np.pi, n_per_class)
-    radii = rng.uniform(3.5, 5.0, n_per_class)
-    class_b_nonlin = np.column_stack([radii * np.cos(angles), radii * np.sin(angles)])
-
-    X_nonlinear = np.vstack([class_a_nonlin, class_b_nonlin])
-    y_nonlinear = np.hstack([np.zeros(n_per_class), np.ones(n_per_class)])
-
-    # --- SVM for linear case ---
-    try:
-        from sklearn.svm import SVC
-        svm = SVC(kernel="linear", C=1e10, random_state=42)
-        svm.fit(X_linear, y_linear)
-        w = svm.coef_[0].astype(np.float64)
-        b = float(svm.intercept_[0])
-        sv_indices = [int(i) for i in svm.support_]
-    except ImportError:
-        # Fallback: analytical solution for two well-separated Gaussian blobs
-        centroid_a = class_a_lin.mean(axis=0)
-        centroid_b = class_b_lin.mean(axis=0)
-        w = centroid_b - centroid_a
-        w = w / np.linalg.norm(w)
-        b = float(-np.dot(w, (centroid_a + centroid_b) / 2))
-        # Support vectors: nearest points to the decision boundary
-        dists_a = np.abs(np.dot(class_a_lin, w) + b)
-        dists_b = np.abs(np.dot(class_b_lin, w) + b)
-        threshold_a = np.percentile(dists_a, 20)
-        threshold_b = np.percentile(dists_b, 20)
-        sv_indices = (
-            [int(i) for i in np.where(dists_a <= threshold_a)[0]]
-            + [int(n_per_class + i) for i in np.where(dists_b <= threshold_b)[0]]
-        )
-        # Adjust w so margin distance = 1/||w||
-        margin_gap = float(np.abs(np.dot(class_a_lin[0], w) + b))
-        # Use the actual minimum margin
-        all_dists = np.concatenate([dists_a, dists_b])
-        margin_actual = float(np.min(all_dists[np.nonzero(all_dists)]))
-        if margin_actual > 0:
-            b = b / margin_actual
-            w = w / margin_actual
-
-    # --- Decision boundary & margin geometry ---
-    w_norm = w / np.linalg.norm(w)
-    perp = np.array([-w_norm[1], w_norm[0]], dtype=np.float64)
-    extent = 7.0
-    p_center = -b * w_norm
-    p1 = p_center + perp * extent
-    p2 = p_center - perp * extent
-    # Margin +1
-    p1_pos = p1 + w_norm
-    p2_pos = p2 + w_norm
-    # Margin -1
-    p1_neg = p1 - w_norm
-    p2_neg = p2 - w_norm
-
-    # --- Kernel lift:  z = exp(-(x² + y²)) ---
-    def kernel_lift_z(pts):
-        r_sq = np.sum(pts ** 2, axis=1)
-        return np.exp(-r_sq)
-
-    z_lin_red = kernel_lift_z(class_a_lin)
-    z_lin_blue = kernel_lift_z(class_b_lin)
-    z_nonlin_red = kernel_lift_z(class_a_nonlin)
-    z_nonlin_blue = kernel_lift_z(class_b_nonlin)
-
-    # Separation hyperplane in kernel space
-    # After lift, Red (origin) → high-z, Blue (ring) → low-z
-    sep_z = float(0.5 * (np.mean(z_nonlin_red) + np.mean(z_nonlin_blue)))
-
-    data = {
-        "n": n_per_class,
-        "linear_red": class_a_lin.tolist(),
-        "linear_blue": class_b_lin.tolist(),
-        "nonlinear_red": class_a_nonlin.tolist(),
-        "nonlinear_blue": class_b_nonlin.tolist(),
-        "z_linear_red": z_lin_red.tolist(),
-        "z_linear_blue": z_lin_blue.tolist(),
-        "z_nonlinear_red": z_nonlin_red.tolist(),
-        "z_nonlinear_blue": z_nonlin_blue.tolist(),
-        "w": w.tolist(),
-        "b": b,
-        "sv_indices": sv_indices,
-        "db_line": [p1.tolist(), p2.tolist()],
-        "margin_pos": [p1_pos.tolist(), p2_pos.tolist()],
-        "margin_neg": [p1_neg.tolist(), p2_neg.tolist()],
-        "hyperplane_z": sep_z,
-    }
-    return data
+from src.data_gen import generate_datasets
+from src.utils import to_json_compact
 
 
 # ============================================================
@@ -1043,7 +931,7 @@ def main():
     )
 
     data = generate_datasets()
-    data_json = json.dumps(data, indent=None, separators=(",", ":"))
+    data_json = to_json_compact(data)
     html = build_html(data_json)
     components.html(html, height=720, scrolling=False)
 
